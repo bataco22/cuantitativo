@@ -33,8 +33,20 @@
 
       <div class="section-title">
         <div>
+          <h2>Mercado Hoy</h2>
+          <p>Ranking automático según oportunidad Long o Short.</p>
+        </div>
+        <select id="marketModeSelect" class="compact-select">
+          <option value="long" selected>Long</option>
+          <option value="short">Short</option>
+        </select>
+      </div>
+      <div id="marketRanking" class="ranking-list"></div>
+
+      <div class="section-title">
+        <div>
           <h2>Favoritos</h2>
-          <p>Score basado en tendencia, momentum, fuerza, volumen y volatilidad.</p>
+          <p>Scores Long y Short separados.</p>
         </div>
         <button id="addAssetBtn" class="primary small">+ Agregar</button>
       </div>
@@ -55,6 +67,10 @@
       </div>
 
       <div class="controls-row">
+        <select id="analysisModeSelect">
+          <option value="long" selected>Lectura Long</option>
+          <option value="short">Lectura Short</option>
+        </select>
         <select id="timeframeSelect">
           <option value="4h">4 horas</option>
           <option value="1d" selected>Diario</option>

@@ -71,21 +71,32 @@ function adx(c,p=14){
 function analyze(candles){
   const closes=candles.map(x=>x.c), vols=candles.map(x=>x.v);
   const e20=ema(closes,20),e50=ema(closes,50),e200=ema(closes,200),rs=rsi(closes),at=atr(candles),ax=adx(candles),v20=sma(vols,20);
-  const i=closes.length-1, price=closes[i], prev=closes[i-1];
-  let factors={};
-  factors.trend = (price>e20[i]?0.35:0)+(e20[i]>e50[i]?0.35:0)+(e50[i]>e200[i]?0.30:0);
-  factors.momentum = rs[i]>=50&&rs[i]<=68?1:rs[i]>=45&&rs[i]<75?.65:rs[i]<35?.45:.2;
-  factors.strength = ax[i]>=25?1:ax[i]>=18?.65:.3;
-  factors.volume = v20[i]&&vols[i]>v20[i]?1:.45;
-  const atrPct=at[i]/price*100;
-  factors.volatility = atrPct>=1&&atrPct<=6?1:atrPct<9?.6:.25;
+  const i=closes.length-1, price=closes[i], prev=closes[i-1], atrPct=at[i]/price*100;
   const look=candles.slice(-12), highs=look.map(x=>x.h), lows=look.map(x=>x.l);
-  factors.structure=(highs.at(-1)>Math.max(...highs.slice(0,-1))?.55:0)+(lows.at(-1)>Math.min(...lows.slice(0,-1))?.45:0);
-  const score=Math.round(Object.entries(factors).reduce((s,[k,v])=>s+v*(state.weights[k]||0),0));
-  let decision=score>=75?"Favorable":score>=58?"Esperar confirmación":score>=42?"Neutral":"Evitar";
-  const trend=price>e20[i]&&e20[i]>e50[i]?"Alcista":price<e20[i]&&e20[i]<e50[i]?"Bajista":"Mixta";
-  const support=Math.min(...candles.slice(-20).map(x=>x.l)), resistance=Math.max(...candles.slice(-20).map(x=>x.h));
-  return {score,decision,trend,rsi:rs[i],adx:ax[i],atrPct,volumeRatio:v20[i]?vols[i]/v20[i]:1,support,resistance,price,change:(price/prev-1)*100,e20,e50,e200,factors};
+  const longFactors={
+    trend:(price>e20[i]?.35:0)+(e20[i]>e50[i]?.35:0)+(e50[i]>e200[i]?.30:0),
+    momentum:rs[i]>=50&&rs[i]<=68?1:rs[i]>=45&&rs[i]<75?.65:rs[i]<35?.45:.2,
+    strength:ax[i]>=25?1:ax[i]>=18?.65:.3,
+    volume:v20[i]&&vols[i]>v20[i]?1:.45,
+    volatility:atrPct>=1&&atrPct<=6?1:atrPct<9?.6:.25,
+    structure:(highs.at(-1)>Math.max(...highs.slice(0,-1))?.55:0)+(lows.at(-1)>Math.min(...lows.slice(0,-1))?.45:0)
+  };
+  const shortFactors={
+    trend:(price<e20[i]?.35:0)+(e20[i]<e50[i]?.35:0)+(e50[i]<e200[i]?.30:0),
+    momentum:rs[i]>=32&&rs[i]<=50?1:rs[i]>25&&rs[i]<55?.65:rs[i]>70?.45:.2,
+    strength:ax[i]>=25?1:ax[i]>=18?.65:.3,
+    volume:v20[i]&&vols[i]>v20[i]?1:.45,
+    volatility:atrPct>=1&&atrPct<=6?1:atrPct<9?.6:.25,
+    structure:(lows.at(-1)<Math.min(...lows.slice(0,-1))?.55:0)+(highs.at(-1)<Math.max(...highs.slice(0,-1))?.45:0)
+  };
+  const calc=f=>Math.round(Object.entries(f).reduce((s,[k,v])=>s+v*(state.weights[k]||0),0));
+  const longScore=calc(longFactors),shortScore=calc(shortFactors);
+  const decision=s=>s>=75?"Favorable":s>=58?"Esperar confirmación":s>=42?"Neutral":"Evitar";
+  return {longScore,shortScore,longDecision:decision(longScore),shortDecision:decision(shortScore),
+    trend:price>e20[i]&&e20[i]>e50[i]?"Alcista":price<e20[i]&&e20[i]<e50[i]?"Bajista":"Mixta",
+    rsi:rs[i],adx:ax[i],atrPct,volumeRatio:v20[i]?vols[i]/v20[i]:1,
+    support:Math.min(...candles.slice(-20).map(x=>x.l)),resistance:Math.max(...candles.slice(-20).map(x=>x.h)),
+    price,change:(price/prev-1)*100,e20,e50,e200,longFactors,shortFactors};
 }
 async function getCandles(symbol,interval="1d",limit=500){
   const raw=await api("/klines",{symbol:symbol+"USDT",interval,limit});
@@ -96,6 +107,16 @@ async function getTicker(symbol){
 }
 
 function scoreClass(score){return score>=75?"good":score>=55?"warn":score<40?"bad":"neutral"}
+function activeScore(d,mode){return mode==="short"?d.shortScore:d.longScore}
+function activeDecision(d,mode){return mode==="short"?d.shortDecision:d.longDecision}
+function renderRanking(){
+  const mode=$("#marketModeSelect")?.value||"long";
+  const rows=state.assets.filter(s=>state.market[s]).map(s=>({s,d:state.market[s]})).sort((a,b)=>activeScore(b.d,mode)-activeScore(a.d,mode));
+  $("#marketRanking").innerHTML=rows.length?rows.map((x,i)=>`<button class="rank-row" data-rank="${x.s}">
+    <span class="rank-num">${i+1}</span><span class="rank-main"><strong>${x.s}/USDT</strong><small>${mode==="long"?"Oportunidad de compra":"Oportunidad de caída"}</small></span>
+    <span class="rank-score">${activeScore(x.d,mode)}/100</span><span class="rank-action">${activeDecision(x.d,mode)}</span></button>`).join(""):"<div class='notice'>Actualizando ranking…</div>";
+  $$("[data-rank]").forEach(b=>b.onclick=()=>openAnalysis(b.dataset.rank));
+}
 function renderAssets(){
   const grid=$("#assetGrid"); grid.innerHTML="";
   state.assets.forEach(sym=>{
@@ -104,11 +125,12 @@ function renderAssets(){
     card.innerHTML=d?`
       <div class="asset-top">
         <div class="symbol-wrap"><div class="coin-badge">${sym.slice(0,2)}</div><div><h3>${sym}</h3><span class="pair">${sym}/USDT</span></div></div>
-        <div class="score-ring" style="--score:${d.score}"><span>${d.score}</span></div>
+        <div class="score-ring" style="--score:${Math.max(d.longScore,d.shortScore)}"><span>${Math.max(d.longScore,d.shortScore)}</span></div>
       </div>
       <div class="price">${money(d.price)}</div>
       <div class="change ${d.change>=0?"pos":"neg"}">${d.change>=0?"+":""}${fmt(d.change)}% · 24h</div>
-      <div class="card-actions"><span class="tag">${d.decision}</span><button class="remove-btn" data-remove="${sym}" aria-label="Eliminar">×</button></div>
+      <div class="dual-scores"><div class="mini-score"><span>Long</span><strong>${d.longScore}/100</strong></div><div class="mini-score"><span>Short</span><strong>${d.shortScore}/100</strong></div></div>
+      <div class="card-actions"><span class="tag">${d.longScore>=d.shortScore?"Sesgo Long":"Sesgo Short"}</span><button class="remove-btn" data-remove="${sym}" aria-label="Eliminar">×</button></div>
     `:`
       <div class="asset-top"><div class="symbol-wrap"><div class="coin-badge">${sym.slice(0,2)}</div><div><h3>${sym}</h3><span class="pair">${sym}/USDT</span></div></div></div>
       <div class="price">Cargando…</div>`;
@@ -127,12 +149,14 @@ async function refreshAll(){
       const a=analyze(c);
       state.market[sym]={...a,price:+t.lastPrice,change:+t.priceChangePercent};
       ok++;
-      renderAssets();
+      renderAssets();renderRanking();
     }catch(e){console.warn(sym,e)}
   }));
-  const scores=Object.values(state.market).map(x=>x.score);
+  const mode=$("#marketModeSelect")?.value||"long";
+  const scores=Object.values(state.market).map(x=>activeScore(x,mode));
   const avg=scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length):0;
-  $("#marketSummary").textContent=ok?`${ok} activos analizados · score medio ${avg}/100`:"No fue posible conectar con datos públicos";
+  $("#marketSummary").textContent=ok?`${ok} activos analizados · score ${mode==="long"?"Long":"Short"} medio ${avg}/100`:"No fue posible conectar con datos públicos";
+  renderRanking();
   $("#lastUpdate").textContent=new Date().toLocaleTimeString("es-MX",{hour:"2-digit",minute:"2-digit"});
   $("#refreshAllBtn").classList.remove("loading");
 }
@@ -146,8 +170,9 @@ async function refreshAnalysis(){
     const interval=$("#timeframeSelect").value;
     const candles=await getCandles(state.selected,interval,500);
     const a=analyze(candles);state.analysis={candles,...a};
-    $("#mainScore").textContent=a.score+"/100";
-    $("#mainDecision").textContent=a.decision;$("#mainDecision").className="decision "+scoreClass(a.score);
+    const mode=$("#analysisModeSelect").value,score=activeScore(a,mode),decision=activeDecision(a,mode);
+    $("#mainScore").textContent=score+"/100";
+    $("#mainDecision").textContent=decision;$("#mainDecision").className="decision "+scoreClass(score);
     $("#analysisPrice").textContent=money(a.price);
     $("#analysisChange").textContent=`Última vela: ${a.change>=0?"+":""}${fmt(a.change)}%`;
     $("#chartCaption").textContent=`${state.selected}/USDT · ${interval} · ${candles.length} velas`;
@@ -156,18 +181,21 @@ async function refreshAnalysis(){
   $("#analysisView").classList.remove("loading");
 }
 function renderDiagnostic(a){
-  const metrics=[
-    ["Tendencia",a.trend],["RSI 14",fmt(a.rsi,1)],["ADX 14",fmt(a.adx,1)],
-    ["ATR / precio",fmt(a.atrPct,2)+"%"],["Volumen / promedio",fmt(a.volumeRatio,2)+"x"],
-    ["Soporte 20 velas",money(a.support)],["Resistencia 20 velas",money(a.resistance)]
-  ];
+  const mode=$("#analysisModeSelect").value;
+  const metrics=[["Tendencia",a.trend],["RSI 14",fmt(a.rsi,1)],["ADX 14",fmt(a.adx,1)],["ATR / precio",fmt(a.atrPct,2)+"%"],["Volumen / promedio",fmt(a.volumeRatio,2)+"x"],["Soporte 20 velas",money(a.support)],["Resistencia 20 velas",money(a.resistance)]];
   $("#diagnosticGrid").innerHTML=metrics.map(([k,v])=>`<div class="diag"><span>${k}</span><strong>${v}</strong></div>`).join("");
-  const ext=a.price>a.e20.at(-1)*1.08;
-  let txt=`La estructura es ${a.trend.toLowerCase()} y la fuerza ADX está en ${fmt(a.adx,1)}. `;
-  txt+=a.rsi>70?"El momentum está sobrecomprado; perseguir el precio aumenta el riesgo. ":a.rsi>=50?"El momentum acompaña la tendencia sin estar en extremo. ":"El momentum es débil. ";
-  txt+=a.volumeRatio>1?"El volumen supera su promedio reciente. ":"El volumen todavía no confirma con claridad. ";
-  txt+=ext?"El precio está muy separado de la EMA20, por lo que conviene esperar retroceso o consolidación. ":"La distancia respecto a la media corta es razonable. ";
-  txt+=`Resultado: ${a.decision.toLowerCase()}.`;
+  let txt;
+  if(mode==="long"){
+    txt=`Lectura Long: tendencia ${a.trend.toLowerCase()}, ADX ${fmt(a.adx,1)} y RSI ${fmt(a.rsi,1)}. `;
+    txt+=a.rsi>70?"Está sobrecomprado; no conviene perseguirlo. ":a.rsi>=50?"El momentum acompaña la compra. ":"El momentum comprador es débil. ";
+    txt+=a.volumeRatio>1?"El volumen confirma mejor. ":"El volumen aún no confirma. ";
+    txt+=`Resultado: ${a.longDecision.toLowerCase()}.`;
+  }else{
+    txt=`Lectura Short: busca debilidad bajista, no una compra barata. Tendencia ${a.trend.toLowerCase()}, ADX ${fmt(a.adx,1)} y RSI ${fmt(a.rsi,1)}. `;
+    txt+=a.rsi<30?"Ya está sobrevendido; abrir short tarde aumenta el riesgo de rebote. ":a.rsi<50?"El momentum favorece presión bajista. ":"El momentum todavía no confirma caída. ";
+    txt+=a.volumeRatio>1?"El volumen confirma mejor. ":"El volumen aún no confirma. ";
+    txt+=`Resultado: ${a.shortDecision.toLowerCase()}.`;
+  }
   $("#plainExplanation").textContent=txt;
 }
 function drawLineChart(canvas, series, labels=[]){
@@ -271,7 +299,9 @@ $("#resetDataBtn").onclick=()=>{if(confirm("¿Borrar favoritos, pesos y configur
 $("#backToDashboard").onclick=()=>showView("dashboardView");
 $("#refreshAnalysisBtn").onclick=refreshAnalysis;
 $("#timeframeSelect").onchange=refreshAnalysis;
+$("#analysisModeSelect").onchange=refreshAnalysis;
+$("#marketModeSelect").onchange=()=>{renderRanking();refreshAll()};
 $("#refreshAllBtn").onclick=refreshAll;
 
-renderWeights();fillAssetSelects();renderAssets();refreshAll();
+renderWeights();fillAssetSelects();renderAssets();renderRanking();refreshAll();
 if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(console.warn);

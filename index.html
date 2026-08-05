@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1220" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Quant Centro" />
+  <title>Centro de Trading Cuantitativo</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">Uso personal · Datos públicos</p>
+      <h1>Centro Quant</h1>
+    </div>
+    <button id="refreshAllBtn" class="icon-btn" aria-label="Actualizar">↻</button>
+  </header>
+
+  <main>
+    <section id="dashboardView" class="view active">
+      <div class="hero-card">
+        <div>
+          <p class="muted">Estado de tus favoritos</p>
+          <h2 id="marketSummary">Cargando mercado…</h2>
+        </div>
+        <span id="lastUpdate" class="pill">Sin actualizar</span>
+      </div>
+
+      <div class="section-title">
+        <div>
+          <h2>Favoritos</h2>
+          <p>Score basado en tendencia, momentum, fuerza, volumen y volatilidad.</p>
+        </div>
+        <button id="addAssetBtn" class="primary small">+ Agregar</button>
+      </div>
+      <div id="assetGrid" class="asset-grid"></div>
+
+      <div class="notice">
+        <strong>Importante:</strong> el score mide cuántas condiciones favorables se cumplen. No es una probabilidad garantizada de subida.
+      </div>
+    </section>
+
+    <section id="analysisView" class="view">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">Análisis cuantitativo</p>
+          <h2 id="analysisTitle">Selecciona un activo</h2>
+        </div>
+        <button id="backToDashboard" class="ghost">← Volver</button>
+      </div>
+
+      <div class="controls-row">
+        <select id="timeframeSelect">
+          <option value="4h">4 horas</option>
+          <option value="1d" selected>Diario</option>
+          <option value="1w">Semanal</option>
+          <option value="1M">Mensual</option>
+        </select>
+        <button id="refreshAnalysisBtn" class="secondary">Actualizar</button>
+      </div>
+
+      <div class="analysis-top">
+        <div class="score-card">
+          <span class="muted">Score cuantitativo</span>
+          <strong id="mainScore">--</strong>
+          <span id="mainDecision" class="decision neutral">Sin datos</span>
+        </div>
+        <div class="metric-card">
+          <span>Precio</span><strong id="analysisPrice">--</strong>
+          <small id="analysisChange">--</small>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-head">
+          <div>
+            <strong>Precio y medias</strong>
+            <small id="chartCaption">Últimas velas</small>
+          </div>
+          <div class="legend"><span>Precio</span><span>EMA20</span><span>EMA50</span></div>
+        </div>
+        <canvas id="priceChart" width="900" height="420"></canvas>
+      </div>
+
+      <div id="diagnosticGrid" class="diagnostic-grid"></div>
+
+      <div class="explanation-card">
+        <h3>Lectura clara</h3>
+        <p id="plainExplanation">Selecciona un activo para obtener el diagnóstico.</p>
+      </div>
+    </section>
+
+    <section id="backtestView" class="view">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">Laboratorio</p>
+          <h2>Backtesting sencillo</h2>
+          <p>Prueba reglas sobre el historial descargado. Los resultados incluyen comisión estimada.</p>
+        </div>
+      </div>
+
+      <div class="form-card">
+        <div class="form-grid">
+          <label>Activo
+            <select id="btSymbol"></select>
+          </label>
+          <label>Temporalidad
+            <select id="btInterval">
+              <option value="4h">4 horas</option>
+              <option value="1d" selected>Diario</option>
+              <option value="1w">Semanal</option>
+            </select>
+          </label>
+          <label>Regla de entrada
+            <select id="btPreset">
+              <option value="trend">Tendencia: EMA20 &gt; EMA50 y RSI 50–68</option>
+              <option value="pullback">Retroceso: precio &gt; EMA200 y cruza EMA20</option>
+              <option value="breakout">Ruptura: máximo 20 velas + volumen</option>
+            </select>
+          </label>
+          <label>Capital inicial
+            <input id="btCapital" type="number" value="10000" min="100" />
+          </label>
+          <label>Stop %
+            <input id="btStop" type="number" value="3" min="0.2" step="0.1" />
+          </label>
+          <label>Objetivo %
+            <input id="btTarget" type="number" value="9" min="0.2" step="0.1" />
+          </label>
+          <label>Comisión por lado %
+            <input id="btFee" type="number" value="0.1" min="0" step="0.01" />
+          </label>
+          <label>Riesgo por operación %
+            <input id="btRisk" type="number" value="1" min="0.1" max="10" step="0.1" />
+          </label>
+        </div>
+        <button id="runBacktestBtn" class="primary wide">Ejecutar backtest</button>
+      </div>
+
+      <div id="btResults" class="results-grid hidden"></div>
+      <div id="btEquityWrap" class="chart-card hidden">
+        <div class="chart-head"><strong>Curva de capital</strong><small>Resultado simulado</small></div>
+        <canvas id="equityChart" width="900" height="360"></canvas>
+      </div>
+      <div class="notice">
+        Un backtest no garantiza resultados futuros. Sirve para descartar ideas débiles y medir reglas antes de arriesgar dinero.
+      </div>
+    </section>
+
+    <section id="positionView" class="view">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">Gestión de riesgo</p>
+          <h2>Calculadora de posición</h2>
+        </div>
+      </div>
+      <div class="form-card">
+        <div class="form-grid">
+          <label>Capital disponible
+            <input id="posCapital" type="number" value="20000" />
+          </label>
+          <label>Riesgo máximo %
+            <input id="posRisk" type="number" value="1" step="0.1" />
+          </label>
+          <label>Precio de entrada
+            <input id="posEntry" type="number" placeholder="Ej. 65000" step="any" />
+          </label>
+          <label>Stop loss
+            <input id="posStop" type="number" placeholder="Ej. 63000" step="any" />
+          </label>
+          <label>Objetivo
+            <input id="posTarget" type="number" placeholder="Ej. 71000" step="any" />
+          </label>
+        </div>
+        <button id="calcPositionBtn" class="primary wide">Calcular operación</button>
+      </div>
+      <div id="positionResults" class="results-grid hidden"></div>
+    </section>
+
+    <section id="settingsView" class="view">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">Configuración</p>
+          <h2>Sistema cuantitativo</h2>
+          <p>Estos pesos determinan el score. Después podremos ajustarlos con evidencia del backtest.</p>
+        </div>
+      </div>
+      <div class="form-card">
+        <div id="weightsForm" class="weights"></div>
+        <button id="saveWeightsBtn" class="primary wide">Guardar pesos</button>
+        <button id="resetDataBtn" class="danger wide">Restablecer aplicación</button>
+      </div>
+      <div class="notice">
+        Los datos personales y preferencias se guardan localmente en este dispositivo. La app no pide claves de exchange.
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav">
+    <button data-view="dashboardView" class="active"><span>⌂</span>Mercado</button>
+    <button data-view="backtestView"><span>◫</span>Backtest</button>
+    <button data-view="positionView"><span>◎</span>Operación</button>
+    <button data-view="settingsView"><span>⚙</span>Sistema</button>
+  </nav>
+
+  <dialog id="assetDialog">
+    <form method="dialog" class="dialog-card">
+      <h3>Agregar criptomoneda</h3>
+      <p>Escribe el símbolo usado contra USDT. Ejemplos: BTC, ETH, LINK, SOL.</p>
+      <input id="newAssetInput" maxlength="12" autocomplete="off" placeholder="BTC" />
+      <div class="dialog-actions">
+        <button value="cancel" class="ghost">Cancelar</button>
+        <button id="confirmAddAsset" value="default" class="primary">Agregar</button>
+      </div>
+      <p id="assetDialogError" class="error"></p>
+    </form>
+  </dialog>
+
+  <script src="./app.js"></script>
+</body>
+</html>

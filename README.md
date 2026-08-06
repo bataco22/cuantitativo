@@ -43,3 +43,9 @@ Herramienta educativa y de investigación. Los resultados históricos no garanti
 - Diario local con estadísticas de acierto y resultado promedio
 
 Si stop y objetivo aparecen tocados dentro de una misma vela, la app registra pérdida de forma conservadora porque no puede conocer el orden intravela.
+
+## Versión 4
+- Cada indicador se puede tocar para abrir una explicación.
+- Medidor visual con zonas de referencia.
+- Estado en lenguaje sencillo: bajo, normal, fuerte, sobrecompra, etc.
+- El volumen usa la última vela cerrada para evitar valores artificialmente bajos.

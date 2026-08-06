@@ -73,10 +73,10 @@ function adx(c,p=14){
 function analyze(candles){
   const closes=candles.map(x=>x.c), vols=candles.map(x=>x.v);
   const e20=ema(closes,20),e50=ema(closes,50),e200=ema(closes,200),rs=rsi(closes),at=atr(candles),ax=adx(candles),v20=sma(vols,20);
-  const i=closes.length-1, price=closes[i], prev=closes[i-1], atrPct=at[i]/price*100;
-  const look=candles.slice(-12), highs=look.map(x=>x.h), lows=look.map(x=>x.l);
+  const i=Math.max(1,closes.length-2), price=closes.at(-1), signalPrice=closes[i], prev=closes[i-1], atrPct=at[i]/signalPrice*100;
+  const closedCandles=candles.slice(0,-1), look=closedCandles.slice(-12), highs=look.map(x=>x.h), lows=look.map(x=>x.l);
   const longFactors={
-    trend:(price>e20[i]?.35:0)+(e20[i]>e50[i]?.35:0)+(e50[i]>e200[i]?.30:0),
+    trend:(signalPrice>e20[i]?.35:0)+(e20[i]>e50[i]?.35:0)+(e50[i]>e200[i]?.30:0),
     momentum:rs[i]>=50&&rs[i]<=68?1:rs[i]>=45&&rs[i]<75?.65:rs[i]<35?.45:.2,
     strength:ax[i]>=25?1:ax[i]>=18?.65:.3,
     volume:v20[i]&&vols[i]>v20[i]?1:.45,
@@ -84,7 +84,7 @@ function analyze(candles){
     structure:(highs.at(-1)>Math.max(...highs.slice(0,-1))?.55:0)+(lows.at(-1)>Math.min(...lows.slice(0,-1))?.45:0)
   };
   const shortFactors={
-    trend:(price<e20[i]?.35:0)+(e20[i]<e50[i]?.35:0)+(e50[i]<e200[i]?.30:0),
+    trend:(signalPrice<e20[i]?.35:0)+(e20[i]<e50[i]?.35:0)+(e50[i]<e200[i]?.30:0),
     momentum:rs[i]>=32&&rs[i]<=50?1:rs[i]>25&&rs[i]<55?.65:rs[i]>70?.45:.2,
     strength:ax[i]>=25?1:ax[i]>=18?.65:.3,
     volume:v20[i]&&vols[i]>v20[i]?1:.45,
@@ -95,10 +95,10 @@ function analyze(candles){
   const longScore=calc(longFactors),shortScore=calc(shortFactors);
   const decision=s=>s>=75?"Favorable":s>=58?"Esperar confirmación":s>=42?"Neutral":"Evitar";
   return {longScore,shortScore,longDecision:decision(longScore),shortDecision:decision(shortScore),
-    trend:price>e20[i]&&e20[i]>e50[i]?"Alcista":price<e20[i]&&e20[i]<e50[i]?"Bajista":"Mixta",
+    trend:signalPrice>e20[i]&&e20[i]>e50[i]?"Alcista":signalPrice<e20[i]&&e20[i]<e50[i]?"Bajista":"Mixta",
     rsi:rs[i],adx:ax[i],atrPct,volumeRatio:v20[i]?vols[i]/v20[i]:1,
-    support:Math.min(...candles.slice(-20).map(x=>x.l)),resistance:Math.max(...candles.slice(-20).map(x=>x.h)),
-    price,change:(price/prev-1)*100,e20,e50,e200,longFactors,shortFactors};
+    support:Math.min(...closedCandles.slice(-20).map(x=>x.l)),resistance:Math.max(...closedCandles.slice(-20).map(x=>x.h)),
+    price,change:(price/signalPrice-1)*100,e20,e50,e200,longFactors,shortFactors};
 }
 async function getCandles(symbol,interval="1d",limit=500){
   const raw=await api("/klines",{symbol:symbol+"USDT",interval,limit});
@@ -182,10 +182,70 @@ async function refreshAnalysis(){
   }catch(e){$("#plainExplanation").textContent="No se pudieron descargar los datos. Revisa la conexión e intenta de nuevo."}
   $("#analysisView").classList.remove("loading");
 }
+function metricInterpretation(type,a,mode){
+  const long=mode==="long";
+  if(type==="trend"){
+    const status=a.trend==="Alcista"?"Alcista":a.trend==="Bajista"?"Bajista":"Mixta";
+    const tone=(long&&a.trend==="Alcista")||(!long&&a.trend==="Bajista")?"good":a.trend==="Mixta"?"warn":"bad";
+    return {status,tone,min:0,max:2,pos:a.trend==="Bajista"?0:a.trend==="Mixta"?1:2,labels:["Bajista","Mixta","Alcista"],
+      meaning:"Resume la dirección usando el precio y las medias EMA20, EMA50 y EMA200.",
+      current:long?`Para Long, una tendencia ${a.trend.toLowerCase()} ${a.trend==="Alcista"?"ayuda":"no ayuda"}.`:`Para Short, una tendencia ${a.trend.toLowerCase()} ${a.trend==="Bajista"?"ayuda":"no ayuda"}.`,
+      guide:"Alcista: buscar compras. Mixta: esperar. Bajista: favorece shorts."};
+  }
+  if(type==="rsi"){
+    const v=a.rsi; let status,tone;
+    if(v<30){status="Sobreventa";tone=long?"warn":"bad"} else if(v<45){status="Impulso débil";tone=long?"warn":"good"} else if(v<=65){status="Zona equilibrada";tone="good"} else if(v<=70){status="Impulso alto";tone="warn"} else {status="Sobrecompra";tone=long?"bad":"warn"}
+    return {status,tone,min:0,max:100,pos:v,labels:["0","30","50","70","100"],
+      meaning:"Mide la velocidad del movimiento. No indica por sí solo que debas comprar o vender.",
+      current:`RSI ${fmt(v,1)}: ${status.toLowerCase()}.`,
+      guide:"0–30: sobreventa · 45–65: zona saludable · 70–100: sobrecompra."};
+  }
+  if(type==="adx"){
+    const v=a.adx; const status=v<20?"Muy poca fuerza":v<25?"Fuerza naciente":v<40?"Tendencia fuerte":"Tendencia muy fuerte";
+    const tone=v<20?"bad":v<25?"warn":"good";
+    return {status,tone,min:0,max:60,pos:Math.min(v,60),labels:["0","20","25","40","60+"],
+      meaning:"Mide la fuerza de la tendencia, no si va hacia arriba o hacia abajo.",
+      current:`ADX ${fmt(v,1)}: ${status.toLowerCase()}.`,
+      guide:"Menos de 20: lateral · 20–25: empieza · 25–40: fuerte · más de 40: muy fuerte."};
+  }
+  if(type==="atr"){
+    const v=a.atrPct; const status=v<1?"Movimiento bajo":v<=3?"Movimiento moderado":v<=6?"Movimiento alto":"Movimiento extremo";
+    const tone=v<=3?"good":v<=6?"warn":"bad";
+    return {status,tone,min:0,max:10,pos:Math.min(v,10),labels:["0%","1%","3%","6%","10%+"],
+      meaning:"Es como el medidor de movimiento del mercado: estima cuánto recorre una vela en promedio.",
+      current:`ATR ${fmt(v,2)}%: una vela suele recorrer cerca de ese porcentaje.`,
+      guide:"Sirve para no colocar un stop más pequeño que el movimiento normal del activo."};
+  }
+  if(type==="volume"){
+    const v=a.volumeRatio; const status=v<.5?"Muy bajo":v<.9?"Bajo":v<1.2?"Normal":v<2?"Alto":"Extraordinario";
+    const tone=v<.5?"bad":v<.9?"warn":v<2?"good":"warn";
+    return {status,tone,min:0,max:3,pos:Math.min(v,3),labels:["0x","0.5x","1x","2x","3x+"],
+      meaning:"Compara el volumen de la última vela cerrada contra el promedio de las últimas 20.",
+      current:`Volumen ${fmt(v,2)}x: ${status.toLowerCase()}.`,
+      guide:"1x es normal · 2x es el doble de actividad · menos de 0.5x muestra poco interés."};
+  }
+  if(type==="support") return {status:"Zona inferior",tone:"neutral",meaning:"Es el precio más bajo observado en las últimas 20 velas cerradas.",current:`Soporte aproximado: ${money(a.support)}.`,guide:"No es una pared exacta; es una zona donde antes apareció demanda."};
+  return {status:"Zona superior",tone:"neutral",meaning:"Es el precio más alto observado en las últimas 20 velas cerradas.",current:`Resistencia aproximada: ${money(a.resistance)}.`,guide:"No es una pared exacta; es una zona donde antes apareció oferta."};
+}
+function metricCard(type,label,value,a,mode){
+  const x=metricInterpretation(type,a,mode);
+  const gauge=x.pos!==undefined?`<div class="meter"><div class="meter-fill ${x.tone}" style="width:${clamp((x.pos-x.min)/(x.max-x.min)*100,0,100)}%"></div><span class="meter-marker" style="left:${clamp((x.pos-x.min)/(x.max-x.min)*100,0,100)}%"></span></div><div class="meter-labels">${x.labels.map(l=>`<span>${l}</span>`).join("")}</div>`:"";
+  return `<button class="diag metric-help" type="button" aria-expanded="false">
+    <span class="metric-title">${label}<b class="help-symbol">?</b></span><strong>${value}</strong><em class="metric-status ${x.tone}">${x.status}</em>
+    <div class="metric-detail">${gauge}<p><b>Qué mide:</b> ${x.meaning}</p><p><b>Tu lectura:</b> ${x.current}</p><p><b>Guía rápida:</b> ${x.guide}</p></div>
+  </button>`;
+}
 function renderDiagnostic(a){
   const mode=$("#analysisModeSelect").value;
-  const metrics=[["Tendencia",a.trend],["RSI 14",fmt(a.rsi,1)],["ADX 14",fmt(a.adx,1)],["ATR / precio",fmt(a.atrPct,2)+"%"],["Volumen / promedio",fmt(a.volumeRatio,2)+"x"],["Soporte 20 velas",money(a.support)],["Resistencia 20 velas",money(a.resistance)]];
-  $("#diagnosticGrid").innerHTML=metrics.map(([k,v])=>`<div class="diag"><span>${k}</span><strong>${v}</strong></div>`).join("");
+  const metrics=[
+    ["trend","Tendencia",a.trend],["rsi","RSI 14",fmt(a.rsi,1)],["adx","ADX 14",fmt(a.adx,1)],
+    ["atr","ATR / precio",fmt(a.atrPct,2)+"%"],["volume","Volumen / promedio",fmt(a.volumeRatio,2)+"x"],
+    ["support","Soporte 20 velas",money(a.support)],["resistance","Resistencia 20 velas",money(a.resistance)]
+  ];
+  $("#diagnosticGrid").innerHTML=metrics.map(m=>metricCard(...m,a,mode)).join("");
+  $$(".metric-help").forEach(card=>card.addEventListener("click",()=>{
+    const open=card.classList.toggle("open");card.setAttribute("aria-expanded",open?"true":"false");
+  }));
   let txt;
   if(mode==="long"){
     txt=`Lectura Long: tendencia ${a.trend.toLowerCase()}, ADX ${fmt(a.adx,1)} y RSI ${fmt(a.rsi,1)}. `;

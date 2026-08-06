@@ -64,3 +64,19 @@ textarea{width:100%;margin-top:6px;background:#0a1626;color:var(--text);border:1
 .paper-actions{margin-top:13px}.paper-actions button{padding:8px 10px;font-size:.75rem}
 .paper-note{color:#b8c6d8;font-size:.82rem;line-height:1.45;margin:10px 0 0}
 @media(max-width:600px){.paper-levels{grid-template-columns:1fr 1fr}.bottom-nav button{font-size:.62rem}}
+
+/* V4: tarjetas educativas desplegables */
+.diagnostic-grid{grid-template-columns:1fr}
+.metric-help{width:100%;color:var(--text);text-align:left;cursor:pointer;appearance:none}
+.metric-help:hover{border-color:#355174}.metric-help:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.metric-title{display:flex!important;align-items:center;justify-content:space-between;gap:8px;font-size:.92rem!important}
+.help-symbol{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#18314a;color:var(--accent);font-size:.8rem}
+.metric-status{display:inline-block;margin-top:9px;padding:5px 8px;border-radius:999px;font-size:.72rem;font-style:normal;font-weight:800}
+.metric-status.good{background:#133a35;color:var(--accent)}.metric-status.warn{background:#3b321c;color:var(--warn)}.metric-status.bad{background:#3d1822;color:#ff91a1}.metric-status.neutral{background:#1b2c42;color:var(--muted)}
+.metric-detail{display:none;border-top:1px solid var(--line);margin-top:13px;padding-top:13px;color:#c1cee0;font-size:.86rem;line-height:1.5}
+.metric-help.open .metric-detail{display:block}.metric-detail p{margin:10px 0 0}.metric-detail b{color:var(--text)}
+.meter{height:12px;border-radius:999px;background:#1b2b40;position:relative;overflow:visible;margin:5px 5px 0}
+.meter-fill{height:100%;border-radius:999px;background:var(--accent)}.meter-fill.warn{background:var(--warn)}.meter-fill.bad{background:var(--danger)}.meter-fill.neutral{background:#7186a0}
+.meter-marker{position:absolute;top:-4px;width:3px;height:20px;background:var(--text);border-radius:3px;transform:translateX(-1px)}
+.meter-labels{display:flex;justify-content:space-between;color:var(--muted);font-size:.64rem;margin-top:7px}
+@media(min-width:700px){.diagnostic-grid{grid-template-columns:repeat(2,1fr)}.metric-help.open{grid-column:1/-1}}

@@ -49,3 +49,9 @@ Si stop y objetivo aparecen tocados dentro de una misma vela, la app registra p�
 - Medidor visual con zonas de referencia.
 - Estado en lenguaje sencillo: bajo, normal, fuerte, sobrecompra, etc.
 - El volumen usa la última vela cerrada para evitar valores artificialmente bajos.
+
+
+## ACTUALIZACIÓN FORZADA A v6.1
+Después de subir todos los archivos a GitHub Pages, abre una vez:
+`https://TU_USUARIO.github.io/TU_REPOSITORIO/actualizar.html`
+Pulsa “Eliminar v4 y abrir v6.1”. Esto borra el Service Worker y los cachés anteriores.

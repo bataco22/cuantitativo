@@ -1,7 +1,7 @@
 {
-  "name": "Centro Quant v6",
+  "name": "Centro Quant v6.1",
   "short_name": "Centro Quant",
-  "description": "Centro Quant v6: análisis, simulador y diario personal de operaciones.",
+  "description": "Centro Quant v6.1: análisis, simulador y diario personal de operaciones.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

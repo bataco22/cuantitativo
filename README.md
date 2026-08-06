@@ -33,3 +33,13 @@ La app consulta datos públicos de mercado de Binance. No pide API key ni puede 
 
 ## Aviso
 Herramienta educativa y de investigación. Los resultados históricos no garantizan rendimientos futuros.
+
+## Versión 3
+- Pestaña Pruebas para paper trading
+- Long y Short simulados
+- Stop y objetivo por precio o porcentaje
+- Captura automática del score e indicadores al abrir la prueba
+- Revisión automática de objetivo/stop con velas posteriores
+- Diario local con estadísticas de acierto y resultado promedio
+
+Si stop y objetivo aparecen tocados dentro de una misma vela, la app registra pérdida de forma conservadora porque no puede conocer el orden intravela.

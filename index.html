@@ -168,6 +168,72 @@
       </div>
     </section>
 
+
+    <section id="paperView" class="view">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">Prueba sin dinero</p>
+          <h2>Operaciones simuladas</h2>
+          <p>Registra una señal y la app comprobará si primero alcanzó el objetivo o el stop.</p>
+        </div>
+        <button id="refreshPaperBtn" class="secondary">Revisar</button>
+      </div>
+
+      <div class="form-card">
+        <div class="form-grid">
+          <label>Activo
+            <select id="paperSymbol"></select>
+          </label>
+          <label>Dirección
+            <select id="paperSide">
+              <option value="long">Long</option>
+              <option value="short">Short</option>
+            </select>
+          </label>
+          <label>Temporalidad
+            <select id="paperInterval">
+              <option value="4h">4 horas</option>
+              <option value="1d" selected>Diario</option>
+              <option value="1w">Semanal</option>
+            </select>
+          </label>
+          <label>Entrada
+            <input id="paperEntry" type="number" step="any" placeholder="Precio actual automático" />
+          </label>
+          <label>Stop por
+            <select id="paperStopMode">
+              <option value="percent">Porcentaje</option>
+              <option value="price">Precio</option>
+            </select>
+          </label>
+          <label>Stop
+            <input id="paperStop" type="number" step="any" value="3" />
+          </label>
+          <label>Objetivo por
+            <select id="paperTargetMode">
+              <option value="percent">Porcentaje</option>
+              <option value="price">Precio</option>
+            </select>
+          </label>
+          <label>Objetivo
+            <input id="paperTarget" type="number" step="any" value="9" />
+          </label>
+          <label class="full-field">Motivo o notas
+            <textarea id="paperNotes" rows="3" placeholder="Ej. Score alto, tendencia alineada y volumen confirmando"></textarea>
+          </label>
+        </div>
+        <div id="paperPreview" class="notice">Selecciona los datos. Al guardar se capturarán score, RSI, ADX, ATR, volumen y medias.</div>
+        <button id="savePaperBtn" class="primary wide">Guardar prueba</button>
+      </div>
+
+      <div class="section-title"><div><h2>Abiertas</h2><p>Se actualizan al abrir la app o al pulsar Revisar.</p></div></div>
+      <div id="paperOpenList" class="paper-list"></div>
+
+      <div class="section-title"><div><h2>Diario de resultados</h2><p>Historial de operaciones ganadas, perdidas o cerradas manualmente.</p></div></div>
+      <div id="paperStats" class="results-grid"></div>
+      <div id="paperClosedList" class="paper-list"></div>
+    </section>
+
     <section id="positionView" class="view">
       <div class="section-title">
         <div>
@@ -220,7 +286,8 @@
   <nav class="bottom-nav">
     <button data-view="dashboardView" class="active"><span>⌂</span>Mercado</button>
     <button data-view="backtestView"><span>◫</span>Backtest</button>
-    <button data-view="positionView"><span>◎</span>Operación</button>
+    <button data-view="paperView"><span>✎</span>Pruebas</button>
+    <button data-view="positionView"><span>◎</span>Riesgo</button>
     <button data-view="settingsView"><span>⚙</span>Sistema</button>
   </nav>
 

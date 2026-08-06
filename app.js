@@ -479,4 +479,4 @@ $("#refreshPaperBtn").onclick=updatePaperTrades;
 ["paperSymbol","paperSide","paperInterval","paperEntry","paperStopMode","paperStop","paperTargetMode","paperTarget"].forEach(id=>$("#"+id)?.addEventListener("change",previewPaper));
 
 renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();refreshAll();updatePaperTrades();
-if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js?v=61").catch(console.warn);
+if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(console.warn);

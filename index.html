@@ -10,13 +10,13 @@
   <title>Centro de Trading Cuantitativo</title>
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
-  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./styles.css?v=5.0.1" />
 </head>
 <body>
   <header class="app-header">
     <div>
       <p class="eyebrow">Uso personal · Datos públicos</p>
-      <div class="brand-line"><h1>Centro Quant</h1><span class="version-badge">v6.1</span></div>
+      <div class="brand-line"><h1>Centro Quant</h1><span class="version-badge">v5.0</span></div>
     </div>
     <button id="refreshAllBtn" class="icon-btn" aria-label="Actualizar">↻</button>
   </header>
@@ -169,10 +169,11 @@
     </section>
 
 
-    <section id="paperView" class="view paper-v6">
+    <section id="paperView" class="view paper-v5">
+      <div class="new-version-banner"><strong>✓ NUEVA BASE ACTIVA</strong><span>Pruebas fue reconstruida: riesgo, R/B, diario y aprendizaje.</span></div>
       <div class="section-title paper-hero">
         <div>
-          <p class="eyebrow">Laboratorio personal · v6.1</p>
+          <p class="eyebrow">Laboratorio personal · v5</p>
           <h2>Simulador y diario de operaciones</h2>
           <p>Planea la entrada, valida el riesgo y aprende de tus resultados sin usar dinero real.</p>
         </div>
@@ -265,7 +266,7 @@
       </div>
     </section>
   </main>
-  <div class="build-label">Centro Quant v6.1 · ACTUALIZACIÓN CONFIRMADA</div>
+  <div class="build-label">Centro Quant v5.0 · Nueva base limpia</div>
 
   <nav class="bottom-nav">
     <button data-view="dashboardView" class="active"><span>⌂</span>Mercado</button>
@@ -288,6 +289,6 @@
     </form>
   </dialog>
 
-  <script src="./app.js"></script>
+  <script src="./app.js?v=5.0.1"></script>
 </body>
 </html>

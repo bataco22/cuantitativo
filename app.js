@@ -425,6 +425,7 @@ function tradeCard(t){
   ${t.notes?`<p class="paper-note">${t.notes.replace(/</g,"&lt;")}</p>`:""}<div class="paper-actions">${t.status==="open"?`<button class="ghost" data-close-paper="${t.id}">Cerrar manual</button>`:"<span></span>"}<button class="danger" data-delete-paper="${t.id}">Eliminar</button></div></article>`;
 }
 function renderPaperTrades(){
+  const openCountEl=$("#paperOpenCount"); if(openCountEl) openCountEl.textContent=state.paperTrades.filter(t=>t.status==="open").length;
   if(!$("#paperOpenList"))return;
   const open=state.paperTrades.filter(t=>t.status==="open"),closed=state.paperTrades.filter(t=>t.status!=="open");
   $("#paperOpenList").innerHTML=open.length?open.map(tradeCard).join(""):'<div class="notice">Todavía no hay operaciones simuladas abiertas.</div>';

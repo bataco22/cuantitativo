@@ -16,7 +16,7 @@
   <header class="app-header">
     <div>
       <p class="eyebrow">Uso personal · Datos públicos</p>
-      <h1>Centro Quant</h1>
+      <div class="brand-line"><h1>Centro Quant</h1><span class="version-badge">v6.0</span></div>
     </div>
     <button id="refreshAllBtn" class="icon-btn" aria-label="Actualizar">↻</button>
   </header>
@@ -169,73 +169,49 @@
     </section>
 
 
-    <section id="paperView" class="view">
-      <div class="section-title">
+    <section id="paperView" class="view paper-v6">
+      <div class="section-title paper-hero">
         <div>
-          <p class="eyebrow">Prueba sin dinero</p>
-          <h2>Operaciones simuladas</h2>
-          <p>Registra una señal y la app comprobará si primero alcanzó el objetivo o el stop.</p>
+          <p class="eyebrow">Laboratorio personal · v6</p>
+          <h2>Simulador y diario de operaciones</h2>
+          <p>Planea la entrada, valida el riesgo y aprende de tus resultados sin usar dinero real.</p>
         </div>
-        <button id="refreshPaperBtn" class="secondary">Revisar</button>
+        <button id="refreshPaperBtn" class="secondary">Revisar abiertas</button>
       </div>
 
-      <div class="form-card">
-        <div class="form-grid">
-          <label>Activo
-            <select id="paperSymbol"></select>
-          </label>
-          <label>Dirección
-            <select id="paperSide">
-              <option value="long">Long</option>
-              <option value="short">Short</option>
-            </select>
-          </label>
-          <label>Temporalidad
-            <select id="paperInterval">
-              <option value="4h">4 horas</option>
-              <option value="1d" selected>Diario</option>
-              <option value="1w">Semanal</option>
-            </select>
-          </label>
-          <label>Entrada
-            <input id="paperEntry" type="number" step="any" placeholder="Precio actual automático" />
-          </label>
-          <label>Stop por
-            <select id="paperStopMode">
-              <option value="percent">Porcentaje</option>
-              <option value="price">Precio</option>
-            </select>
-          </label>
-          <label>Stop
-            <input id="paperStop" type="number" step="any" value="3" />
-          </label>
-          <label>Objetivo por
-            <select id="paperTargetMode">
-              <option value="percent">Porcentaje</option>
-              <option value="price">Precio</option>
-            </select>
-          </label>
-          <label>Objetivo
-            <input id="paperTarget" type="number" step="any" value="9" />
-          </label>
-          <label>Capital disponible
-            <input id="paperCapital" type="number" min="0" step="any" value="20000" />
-          </label>
-          <label>Riesgo máximo %
-            <input id="paperRiskPct" type="number" min="0.1" max="10" step="0.1" value="1" />
-          </label>
-          <label class="full-field">Motivo o notas
-            <textarea id="paperNotes" rows="3" placeholder="Ej. Score alto, tendencia alineada y volumen confirmando"></textarea>
-          </label>
+      <div class="paper-layout">
+        <div class="form-card paper-entry-card">
+          <div class="paper-card-title"><span class="step-number">1</span><div><strong>Nueva operación</strong><small>Define la idea antes de entrar</small></div></div>
+          <div class="form-grid">
+            <label>Activo<select id="paperSymbol"></select></label>
+            <label>Dirección<select id="paperSide"><option value="long">Long</option><option value="short">Short</option></select></label>
+            <label>Temporalidad<select id="paperInterval"><option value="4h">4 horas</option><option value="1d" selected>Diario</option><option value="1w">Semanal</option></select></label>
+            <label>Entrada<input id="paperEntry" type="number" step="any" placeholder="Precio actual automático" /></label>
+            <label>Stop por<select id="paperStopMode"><option value="percent">Porcentaje</option><option value="price">Precio</option></select></label>
+            <label>Stop<input id="paperStop" type="number" step="any" value="3" /></label>
+            <label>Objetivo por<select id="paperTargetMode"><option value="percent">Porcentaje</option><option value="price">Precio</option></select></label>
+            <label>Objetivo<input id="paperTarget" type="number" step="any" value="9" /></label>
+            <label>Capital disponible<input id="paperCapital" type="number" min="0" step="any" value="20000" /></label>
+            <label>Riesgo máximo %<input id="paperRiskPct" type="number" min="0.1" max="10" step="0.1" value="1" /></label>
+            <label class="full-field">Motivo o notas<textarea id="paperNotes" rows="3" placeholder="Ej. Score alto, tendencia alineada y volumen confirmando"></textarea></label>
+          </div>
+          <div id="paperPreview" class="paper-analysis-panel">Selecciona los datos. Al guardar se capturarán score, RSI, ADX, ATR, volumen y medias.</div>
+          <button id="savePaperBtn" class="primary wide">Guardar operación simulada</button>
         </div>
-        <div id="paperPreview" class="notice">Selecciona los datos. Al guardar se capturarán score, RSI, ADX, ATR, volumen y medias.</div>
-        <button id="savePaperBtn" class="primary wide">Guardar prueba</button>
+
+        <aside class="paper-guide-card">
+          <div class="paper-card-title"><span class="step-number">2</span><div><strong>Reglas de control</strong><small>Tu filtro antes de operar</small></div></div>
+          <div class="rule-row"><span>Riesgo máximo</span><strong>1% sugerido</strong></div>
+          <div class="rule-row"><span>R/B mínimo</span><strong>1 : 3</strong></div>
+          <div class="rule-row"><span>Operaciones abiertas</span><strong id="paperOpenCount">0</strong></div>
+          <p class="muted compact-note">Una operación puede tener score alto y aun así no cumplir tu gestión de riesgo.</p>
+        </aside>
       </div>
 
-      <div class="section-title"><div><h2>Abiertas</h2><p>Se actualizan al abrir la app o al pulsar Revisar.</p></div></div>
+      <div class="section-title paper-section-head"><div><p class="eyebrow">Seguimiento</p><h2>Operaciones abiertas</h2><p>Se actualizan al abrir la app o al pulsar Revisar.</p></div></div>
       <div id="paperOpenList" class="paper-list"></div>
 
-      <div class="section-title"><div><h2>Diario de resultados</h2><p>Historial de operaciones ganadas, perdidas o cerradas manualmente.</p></div></div>
+      <div class="section-title paper-section-head"><div><p class="eyebrow">Estadísticas</p><h2>Diario de resultados</h2><p>Historial, rendimiento acumulado y patrones de tu sistema.</p></div></div>
       <div id="paperStats" class="results-grid"></div>
       <div id="paperInsights" class="insights-card"></div>
       <div id="paperClosedList" class="paper-list"></div>
@@ -289,6 +265,7 @@
       </div>
     </section>
   </main>
+  <div class="build-label">Centro Quant v6.0 · Simulador renovado</div>
 
   <nav class="bottom-nav">
     <button data-view="dashboardView" class="active"><span>⌂</span>Mercado</button>

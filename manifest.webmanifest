@@ -1,7 +1,7 @@
 {
-  "name": "Centro de Trading Cuantitativo",
-  "short_name": "Quant Centro",
-  "description": "Análisis cuantitativo personal de criptomonedas.",
+  "name": "Centro Quant v6",
+  "short_name": "Centro Quant",
+  "description": "Centro Quant v6: análisis, simulador y diario personal de operaciones.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

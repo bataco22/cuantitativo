@@ -94,7 +94,7 @@ function analyze(candles){
   };
   const calc=f=>Math.round(Object.entries(f).reduce((s,[k,v])=>s+v*(state.weights[k]||0),0));
   const longScore=calc(longFactors),shortScore=calc(shortFactors);
-  const decision=s=>s>=75?"Favorable":s>=58?"Esperar confirmación":s>=42?"Neutral":"Evitar";
+  const decision=s=>s>=85?"Favorable":s>=70?"Esperar / Vigilar":"Evitar";
   return {longScore,shortScore,longDecision:decision(longScore),shortDecision:decision(shortScore),
     trend:signalPrice>e20[i]&&e20[i]>e50[i]?"Alcista":signalPrice<e20[i]&&e20[i]<e50[i]?"Bajista":"Mixta",
     rsi:rs[i],adx:ax[i],atrPct,volumeRatio:v20[i]?vols[i]/v20[i]:1,
@@ -109,7 +109,7 @@ async function getTicker(symbol){
   return api("/ticker/24hr",{symbol:symbol+"USDT"});
 }
 
-function scoreClass(score){return score>=75?"good":score>=55?"warn":score<40?"bad":"neutral"}
+function scoreClass(score){return score>=85?"good":score>=70?"warn":"bad"}
 function homeBestOpportunity(){
   const rows=[];
   state.assets.forEach(symbol=>{
@@ -128,19 +128,19 @@ function renderHome(){
   const best=homeBestOpportunity();
   const data=Object.values(state.market);
   const analyzed=data.length;
-  const favorable=data.filter(d=>Math.max(d.longScore,d.shortScore)>=75).length;
-  const neutral=data.filter(d=>{const x=Math.max(d.longScore,d.shortScore);return x>=42&&x<75}).length;
-  const avoid=data.filter(d=>Math.max(d.longScore,d.shortScore)<42).length;
+  const favorable=data.filter(d=>Math.max(d.longScore,d.shortScore)>=85).length;
+  const neutral=data.filter(d=>{const x=Math.max(d.longScore,d.shortScore);return x>=70&&x<85}).length;
+  const avoid=data.filter(d=>Math.max(d.longScore,d.shortScore)<70).length;
   if($("#homeAnalyzed")){ $("#homeAnalyzed").textContent=analyzed; $("#homeFavorable").textContent=favorable; $("#homeNeutral").textContent=neutral; $("#homeAvoid").textContent=avoid; }
   if(!best){
     $("#homePair").textContent="Analizando favoritos…"; $("#homeScore").textContent="--"; $("#homeScore").parentElement.style.setProperty("--home-score",0);
     return;
   }
   const {symbol,side,score,d}=best, sideName=side==="long"?"LONG":"SHORT";
-  const tone=scoreClass(score), confidence=score>=75?"Alta":score>=58?"Media":"Baja";
+  const tone=scoreClass(score), confidence=score>=85?"Alta":score>=70?"Media":"Baja";
   const risk=d.atrPct<=3?"Bajo":d.atrPct<=6?"Medio":"Alto";
-  const decision=score>=75?"FAVORABLE PARA EVALUAR":score>=58?"ESPERAR CONFIRMACIÓN":score>=42?"LECTURA NEUTRAL":"EVITAR POR AHORA";
-  const headline=score>=75?`${symbol} tiene la lectura más fuerte`:score>=58?`${symbol} se acerca, pero aún falta confirmación`:score>=42?`No hay una entrada clara todavía`:`El mercado observado no ofrece una señal suficiente`;
+  const decision=score>=85?"FAVORABLE PARA EVALUAR":score>=70?"ESPERAR / VIGILAR":"EVITAR POR AHORA";
+  const headline=score>=85?`${symbol} tiene una lectura de nivel alto`:score>=70?`${symbol} merece vigilancia, pero aún falta confirmación`:`No hay una entrada disciplinada todavía`;
   $("#homePair").textContent=`${symbol}/USDT · ${sideName}`; $("#homeScore").textContent=score; $("#homeScore").parentElement.style.setProperty("--home-score",score);
   $("#homeSide").textContent=`Sesgo ${sideName}`; $("#homeDecision").textContent=decision; $("#homeDecision").className=`home-decision ${tone}`;
   $("#homeHeadline").textContent=headline; $("#homeSummary").textContent=`Precio ${money(d.price)} · cambio 24h ${d.change>=0?"+":""}${fmt(d.change)}%. Revisa la entrada y exige R/B mínimo 1:3.`;
@@ -189,11 +189,24 @@ function renderTrafficLight(a,mode){
   $("#trafficNeeds").innerHTML=`<strong>Para llegar a verde:</strong><ul>${t.needs.map(n=>`<li>${n}</li>`).join("")}</ul>`;
 }
 
+function scoreQualityLabel(score,rr=0){
+  if(score>=90&&rr>=3) return {grade:"A+",label:"Excelente"};
+  if(score>=85&&rr>=3) return {grade:"A",label:"Alta calidad"};
+  if(score>=70) return {grade:"B",label:"Vigilar"};
+  return {grade:"C",label:"Evitar"};
+}
+function scoreWhySummary(a,mode){
+  const rows=scoreBreakdownData(a,mode).sort((x,y)=>y.quality-x.quality);
+  const good=rows.filter(r=>r.quality>=.8).slice(0,3).map(r=>`✓ ${r.label}: ${r.status.toLowerCase()}`);
+  const weak=[...rows].sort((x,y)=>x.quality-y.quality).filter(r=>r.quality<.8).slice(0,2).map(r=>`${r.quality<.3?"✗":"!"} ${r.label}: ${r.status.toLowerCase()}`);
+  return [...good,...weak];
+}
 function renderScoreBreakdown(a,mode){
   const box=$("#scoreBreakdown");if(!box)return;
   const rows=scoreBreakdownData(a,mode),total=Math.round(rows.reduce((s,r)=>s+r.points,0));
   $("#scoreWeightTotal").textContent=`Pesos: ${rows.reduce((s,r)=>s+r.weight,0)} · Score: ${total}`;
-  box.innerHTML=rows.map(r=>`<div class="score-factor ${r.tone}"><div class="score-factor-top"><div><strong>${r.label}</strong><small>${r.status} · calidad ${Math.round(r.quality*100)}%</small></div><b>+${r.points.toFixed(1)} / ${r.weight}</b></div><div class="factor-track"><span style="width:${r.quality*100}%"></span></div></div>`).join("");
+  const why=scoreWhySummary(a,mode);
+  box.innerHTML=`<div class="score-why"><strong>¿Por qué este score?</strong>${why.map(x=>`<div>${x}</div>`).join("")}</div>`+rows.map(r=>`<div class="score-factor ${r.tone}"><div class="score-factor-top"><div><strong>${r.label}</strong><small>${r.status} · calidad ${Math.round(r.quality*100)}%</small></div><b>+${r.points.toFixed(1)} / ${r.weight}</b></div><div class="factor-track"><span style="width:${r.quality*100}%"></span></div></div>`).join("");
 }
 function renderRanking(){
   const mode=$("#marketModeSelect")?.value||"long";
@@ -450,8 +463,9 @@ async function previewPaper(){
     const score=side==="long"?a.longScore:a.shortScore;
     const riskDist=Math.abs(entry-lv.stop),rewardDist=Math.abs(lv.target-entry),rr=riskDist?rewardDist/riskDist:0;
     const capital=+$("#paperCapital").value||0,riskPct=+$("#paperRiskPct").value||0,riskCash=capital*riskPct/100,qty=riskDist?riskCash/riskDist:0,potential=qty*rewardDist;
-    const warning=rr<3?`<div class="trade-warning">⚠️ Relación 1:${fmt(rr,2)}. Tu regla recomienda mínimo 1:3.</div>`:`<div class="trade-ok">✓ Relación 1:${fmt(rr,2)} compatible con tu regla.</div>`;
-    $("#paperPreview").innerHTML=`<div class="preview-main">Entrada <strong>${money(entry)}</strong> · Stop <strong>${money(lv.stop)}</strong> · Objetivo <strong>${money(lv.target)}</strong> · Score ${side.toUpperCase()} <strong>${score}/100</strong></div><div class="preview-metrics"><span>Riesgo: <strong>${money(riskCash)}</strong></span><span>Cantidad: <strong>${fmt(qty,8)}</strong></span><span>Ganancia potencial: <strong>${money(potential)}</strong></span></div>${warning}`;
+    const warning=rr<3?`<div class="trade-warning">⛔ Relación 1:${fmt(rr,2)}. No se puede guardar: tu mínimo es 1:3.</div>`:`<div class="trade-ok">✓ Relación 1:${fmt(rr,2)} cumple tu regla mínima.</div>`;
+    const quality=scoreQualityLabel(score,rr);
+    $("#paperPreview").innerHTML=`<div class="trade-quality ${score>=85&&rr>=3?"quality-good":score>=70?"quality-warn":"quality-bad"}"><span>CALIDAD</span><strong>${quality.grade}</strong><small>${quality.label}</small></div><div class="preview-main">Entrada <strong>${money(entry)}</strong> · Stop <strong>${money(lv.stop)}</strong> · Objetivo <strong>${money(lv.target)}</strong> · Score ${side.toUpperCase()} <strong>${score}/100</strong></div><div class="preview-metrics"><span>Riesgo: <strong>${money(riskCash)}</strong></span><span>Cantidad: <strong>${fmt(qty,8)}</strong></span><span>Ganancia potencial: <strong>${money(potential)}</strong></span></div>${warning}`;
   }catch(e){$("#paperPreview").textContent="No se pudo preparar la prueba. Revisa la conexión."}
 }
 async function createPaperTrade(){
@@ -465,7 +479,7 @@ async function createPaperTrade(){
   const now=Date.now(),score=side==="long"?a.longScore:a.shortScore;
   const riskDist=Math.abs(entry-lv.stop),rewardDist=Math.abs(lv.target-entry),rr=riskDist?rewardDist/riskDist:0;
   const capital=+$("#paperCapital").value||0,riskPct=+$("#paperRiskPct").value||0,riskCash=capital*riskPct/100,qty=riskDist?riskCash/riskDist:0,potentialProfit=qty*rewardDist;
-  if(rr<1) return alert("La ganancia potencial es menor que la pérdida. Ajusta stop u objetivo.");
+  if(rr<3) return alert(`Esta operación tiene R/B 1:${fmt(rr,2)}. Tu regla mínima es 1:3; ajusta el stop o el objetivo antes de guardarla.`);
   const checklist={trend:$("#checkTrend").checked,signal:$("#checkSignal").checked,risk:$("#checkRisk").checked,noImpulse:$("#checkNoImpulse").checked};
   const completed=Object.values(checklist).filter(Boolean).length;
   if(completed<3&&!confirm(`Solo completaste ${completed} de 4 controles. ¿Guardar de todos modos?`)) return;
@@ -538,7 +552,7 @@ function renderPaperInsights(closed){
     ["RSI menor de 45",t=>t.snapshot?.rsi<45],["RSI entre 45 y 55",t=>t.snapshot?.rsi>=45&&t.snapshot?.rsi<=55],["RSI mayor de 55",t=>t.snapshot?.rsi>55],
     ["ADX menor de 20",t=>t.snapshot?.adx<20],["ADX de 20 o más",t=>t.snapshot?.adx>=20],
     ["volumen por encima del promedio",t=>t.snapshot?.volumeRatio>=1],["volumen bajo",t=>t.snapshot?.volumeRatio<1],
-    ["score de 70 o más",t=>t.score>=70],["score menor de 70",t=>t.score<70]
+    ["score de 85 o más",t=>t.score>=85],["score de 70 a 84",t=>t.score>=70&&t.score<85],["score menor de 70",t=>t.score<70]
   ];
   const ranked=groups.map(([name,test])=>{const a=closed.filter(test);return {name,n:a.length,avg:a.length?a.reduce((s,t)=>s+(t.resultPct||0),0)/a.length:-999,win:a.length?a.filter(t=>(t.resultPct||0)>0).length/a.length*100:0}}).filter(x=>x.n>=3).sort((a,b)=>b.avg-a.avg);
   if(ranked.length){const best=ranked[0],worst=ranked.at(-1);insights.push(`Tus mejores resultados aparecen con <strong>${best.name}</strong>: ${fmt(best.win,0)}% de acierto y ${best.avg>=0?"+":""}${fmt(best.avg,2)}% promedio (${best.n} operaciones).`);if(worst.name!==best.name)insights.push(`La condición más débil hasta ahora es <strong>${worst.name}</strong>: ${fmt(worst.win,0)}% de acierto y ${worst.avg>=0?"+":""}${fmt(worst.avg,2)}% promedio.`)}

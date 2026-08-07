@@ -10,19 +10,70 @@
   <title>Centro de Trading Cuantitativo</title>
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
-  <link rel="stylesheet" href="./styles.css?v=5.0.1" />
+  <link rel="stylesheet" href="./styles.css?v=6.2.0" />
 </head>
 <body>
   <header class="app-header">
     <div>
       <p class="eyebrow">Uso personal · Datos públicos</p>
-      <div class="brand-line"><h1>Centro Quant</h1><span class="version-badge">v5.0</span></div>
+      <div class="brand-line"><h1>Centro Quant</h1><span class="version-badge">v6.1</span></div>
     </div>
     <button id="refreshAllBtn" class="icon-btn" aria-label="Actualizar">↻</button>
   </header>
 
   <main>
-    <section id="dashboardView" class="view active">
+    <section id="homeView" class="view active home-v6">
+      <div class="v6-release-banner"><span class="release-dot"></span><div><strong>Centro Quant v6.2 activo</strong><small>Semáforo de decisión y motor del Score explicable.</small></div></div>
+
+      <article class="decision-hero">
+        <div class="decision-topline"><span id="homePair" class="home-pair">Analizando favoritos…</span><span id="homeUpdated" class="pill">Sin actualizar</span></div>
+        <div class="decision-main">
+          <div class="decision-score-wrap">
+            <span>Score general</span>
+            <strong id="homeScore">--</strong>
+            <small id="homeSide">Buscando oportunidad</small>
+          </div>
+          <div class="decision-copy">
+            <p id="homeDecision" class="home-decision neutral">ESPERANDO DATOS</p>
+            <h2 id="homeHeadline">Conectando con el mercado público</h2>
+            <p id="homeSummary">El sistema comparará tus favoritos y mostrará la oportunidad que merece revisión.</p>
+          </div>
+        </div>
+        <div class="home-kpis">
+          <div><span>Confianza</span><strong id="homeConfidence">--</strong></div>
+          <div><span>Riesgo técnico</span><strong id="homeRisk">--</strong></div>
+          <div><span>Regla R/B</span><strong>1 : 3</strong></div>
+        </div>
+      </article>
+
+      <div class="home-actions">
+        <button id="homeAnalyzeBtn" class="primary">Ver análisis completo</button>
+        <button id="homePaperBtn" class="secondary">Simular operación</button>
+      </div>
+
+      <section class="home-grid">
+        <article class="home-panel">
+          <div class="home-panel-head"><div><p class="eyebrow">Razones</p><h2>¿Por qué aparece aquí?</h2></div><span class="help-symbol">?</span></div>
+          <div id="homeReasons" class="reason-list"><div class="reason-row neutral"><span>•</span><p>Esperando indicadores del mercado.</p></div></div>
+        </article>
+
+        <article class="home-panel">
+          <div class="home-panel-head"><div><p class="eyebrow">Pulso</p><h2>Mercado observado</h2></div></div>
+          <div class="pulse-grid">
+            <div><span>Analizados</span><strong id="homeAnalyzed">0</strong></div>
+            <div><span>Favorables</span><strong id="homeFavorable">0</strong></div>
+            <div><span>Neutrales</span><strong id="homeNeutral">0</strong></div>
+            <div><span>Evitar</span><strong id="homeAvoid">0</strong></div>
+          </div>
+          <button id="homeMarketBtn" class="ghost wide">Abrir ranking del mercado</button>
+          <button id="homeBacktestBtn" class="ghost wide home-secondary-link">Abrir laboratorio Backtest</button>
+        </article>
+      </section>
+
+      <div class="notice home-notice"><strong>Regla de uso:</strong> el Inicio selecciona la mejor lectura disponible, pero una señal favorable no sustituye el stop, el tamaño de posición ni la confirmación de entrada.</div>
+    </section>
+
+    <section id="dashboardView" class="view">
       <div class="hero-card">
         <div>
           <p class="muted">Estado de tus favoritos</p>
@@ -91,6 +142,31 @@
           <small id="analysisChange">--</small>
         </div>
       </div>
+
+      <article class="traffic-card" id="trafficCard">
+        <div class="traffic-head">
+          <div>
+            <p class="eyebrow">Semáforo inteligente</p>
+            <h3 id="trafficTitle">Esperando análisis</h3>
+            <p id="trafficMessage">El sistema combinará score y calidad de los factores para darte una instrucción clara.</p>
+          </div>
+          <div id="trafficLight" class="traffic-light neutral" aria-label="Semáforo sin datos">
+            <span class="light red"></span><span class="light yellow"></span><span class="light green"></span>
+          </div>
+        </div>
+        <div id="trafficReasons" class="traffic-reasons"><div class="reason-row neutral"><span>•</span><p>Selecciona un activo y espera los datos.</p></div></div>
+        <button id="trafficNeedsBtn" class="ghost wide" type="button" aria-expanded="false">¿Qué tendría que pasar para ponerse en verde?</button>
+        <div id="trafficNeeds" class="traffic-needs" hidden></div>
+        <small class="traffic-rule">El verde valida la lectura técnica. Antes de operar, el simulador debe confirmar un riesgo/beneficio mínimo de 1:3.</small>
+      </article>
+
+      <article class="score-engine-card">
+        <div class="score-engine-head">
+          <div><p class="eyebrow">Motor del Score</p><h3>De dónde salen los puntos</h3><p>Cada factor aporta una parte de su peso máximo según la lectura actual.</p></div>
+          <span id="scoreWeightTotal" class="pill">Pesos: 100</span>
+        </div>
+        <div id="scoreBreakdown" class="score-breakdown"><div class="notice">Selecciona un activo para ver el desglose.</div></div>
+      </article>
 
       <div class="chart-card">
         <div class="chart-head">
@@ -173,7 +249,7 @@
       <div class="new-version-banner"><strong>✓ NUEVA BASE ACTIVA</strong><span>Pruebas fue reconstruida: riesgo, R/B, diario y aprendizaje.</span></div>
       <div class="section-title paper-hero">
         <div>
-          <p class="eyebrow">Laboratorio personal · v5</p>
+          <p class="eyebrow">Laboratorio personal · v6.1</p>
           <h2>Simulador y diario de operaciones</h2>
           <p>Planea la entrada, valida el riesgo y aprende de tus resultados sin usar dinero real.</p>
         </div>
@@ -196,6 +272,13 @@
             <label>Riesgo máximo %<input id="paperRiskPct" type="number" min="0.1" max="10" step="0.1" value="1" /></label>
             <label class="full-field">Motivo o notas<textarea id="paperNotes" rows="3" placeholder="Ej. Score alto, tendencia alineada y volumen confirmando"></textarea></label>
           </div>
+          <div class="trade-checklist">
+            <strong>Lista de control antes de guardar</strong>
+            <label><input id="checkTrend" type="checkbox" /> La tendencia apoya la dirección</label>
+            <label><input id="checkSignal" type="checkbox" /> Existe una señal concreta de entrada</label>
+            <label><input id="checkRisk" type="checkbox" /> Acepto la pérdida definida por el stop</label>
+            <label><input id="checkNoImpulse" type="checkbox" /> No estoy entrando por impulso o FOMO</label>
+          </div>
           <div id="paperPreview" class="paper-analysis-panel">Selecciona los datos. Al guardar se capturarán score, RSI, ADX, ATR, volumen y medias.</div>
           <button id="savePaperBtn" class="primary wide">Guardar operación simulada</button>
         </div>
@@ -215,6 +298,16 @@
       <div class="section-title paper-section-head"><div><p class="eyebrow">Estadísticas</p><h2>Diario de resultados</h2><p>Historial, rendimiento acumulado y patrones de tu sistema.</p></div></div>
       <div id="paperStats" class="results-grid"></div>
       <div id="paperInsights" class="insights-card"></div>
+      <div class="journal-toolbar">
+        <select id="paperFilter">
+          <option value="all">Todo el diario</option>
+          <option value="wins">Solo ganadoras</option>
+          <option value="losses">Solo perdedoras</option>
+          <option value="long">Solo Long</option>
+          <option value="short">Solo Short</option>
+        </select>
+        <button id="exportPaperBtn" class="secondary">Exportar CSV</button>
+      </div>
       <div id="paperClosedList" class="paper-list"></div>
     </section>
 
@@ -257,8 +350,14 @@
         </div>
       </div>
       <div class="form-card">
+        <div class="weight-summary"><div><strong>Personaliza tu estrategia</strong><small>Los seis pesos deben sumar 100.</small></div><strong id="weightsTotal">100 / 100</strong></div>
+        <div class="weight-presets">
+          <button type="button" class="ghost" data-weight-preset="balanced">Equilibrado</button>
+          <button type="button" class="ghost" data-weight-preset="trend">Tendencia</button>
+          <button type="button" class="ghost" data-weight-preset="momentum">Momentum</button>
+        </div>
         <div id="weightsForm" class="weights"></div>
-        <button id="saveWeightsBtn" class="primary wide">Guardar pesos</button>
+        <button id="saveWeightsBtn" class="primary wide">Guardar y recalcular</button>
         <button id="resetDataBtn" class="danger wide">Restablecer aplicación</button>
       </div>
       <div class="notice">
@@ -266,11 +365,11 @@
       </div>
     </section>
   </main>
-  <div class="build-label">Centro Quant v5.0 · Nueva base limpia</div>
+  <div class="build-label">Centro Quant v6.2 · Semáforo inteligente</div>
 
   <nav class="bottom-nav">
-    <button data-view="dashboardView" class="active"><span>⌂</span>Mercado</button>
-    <button data-view="backtestView"><span>◫</span>Backtest</button>
+    <button data-view="homeView" class="active"><span>⌂</span>Inicio</button>
+    <button data-view="dashboardView"><span>▥</span>Mercado</button>
     <button data-view="paperView"><span>✎</span>Pruebas</button>
     <button data-view="positionView"><span>◎</span>Riesgo</button>
     <button data-view="settingsView"><span>⚙</span>Sistema</button>
@@ -289,6 +388,6 @@
     </form>
   </dialog>
 
-  <script src="./app.js?v=5.0.1"></script>
+  <script src="./app.js?v=6.2.0"></script>
 </body>
 </html>

@@ -21,6 +21,7 @@ function showView(id){
   $$(".view").forEach(v=>v.classList.toggle("active",v.id===id));
   $$(".bottom-nav button").forEach(b=>b.classList.toggle("active",b.dataset.view===id));
   window.scrollTo({top:0,behavior:"smooth"});
+  if(id==="homeView") renderHome();
   if(id==="backtestView") fillAssetSelects();
   if(id==="paperView"){ fillAssetSelects(); renderPaperTrades(); }
 }
@@ -109,8 +110,91 @@ async function getTicker(symbol){
 }
 
 function scoreClass(score){return score>=75?"good":score>=55?"warn":score<40?"bad":"neutral"}
+function homeBestOpportunity(){
+  const rows=[];
+  state.assets.forEach(symbol=>{
+    const d=state.market[symbol]; if(!d)return;
+    rows.push({symbol,side:"long",score:d.longScore,decision:d.longDecision,d});
+    rows.push({symbol,side:"short",score:d.shortScore,decision:d.shortDecision,d});
+  });
+  return rows.sort((a,b)=>b.score-a.score)[0]||null;
+}
+function homeReasonRows(best){
+  if(!best)return [{tone:"neutral",icon:"•",text:"Esperando indicadores del mercado."}];
+  const rows=scoreBreakdownData(best.d,best.side).sort((a,b)=>b.points-a.points);
+  return rows.map(r=>({tone:r.tone,icon:r.tone==="good"?"✓":r.tone==="bad"?"×":"!",text:`${r.label}: aporta ${r.points.toFixed(1)} de ${r.weight} puntos (${r.status.toLowerCase()}).`}));
+}
+function renderHome(){
+  const best=homeBestOpportunity();
+  const data=Object.values(state.market);
+  const analyzed=data.length;
+  const favorable=data.filter(d=>Math.max(d.longScore,d.shortScore)>=75).length;
+  const neutral=data.filter(d=>{const x=Math.max(d.longScore,d.shortScore);return x>=42&&x<75}).length;
+  const avoid=data.filter(d=>Math.max(d.longScore,d.shortScore)<42).length;
+  if($("#homeAnalyzed")){ $("#homeAnalyzed").textContent=analyzed; $("#homeFavorable").textContent=favorable; $("#homeNeutral").textContent=neutral; $("#homeAvoid").textContent=avoid; }
+  if(!best){
+    $("#homePair").textContent="Analizando favoritos…"; $("#homeScore").textContent="--"; $("#homeScore").parentElement.style.setProperty("--home-score",0);
+    return;
+  }
+  const {symbol,side,score,d}=best, sideName=side==="long"?"LONG":"SHORT";
+  const tone=scoreClass(score), confidence=score>=75?"Alta":score>=58?"Media":"Baja";
+  const risk=d.atrPct<=3?"Bajo":d.atrPct<=6?"Medio":"Alto";
+  const decision=score>=75?"FAVORABLE PARA EVALUAR":score>=58?"ESPERAR CONFIRMACIÓN":score>=42?"LECTURA NEUTRAL":"EVITAR POR AHORA";
+  const headline=score>=75?`${symbol} tiene la lectura más fuerte`:score>=58?`${symbol} se acerca, pero aún falta confirmación`:score>=42?`No hay una entrada clara todavía`:`El mercado observado no ofrece una señal suficiente`;
+  $("#homePair").textContent=`${symbol}/USDT · ${sideName}`; $("#homeScore").textContent=score; $("#homeScore").parentElement.style.setProperty("--home-score",score);
+  $("#homeSide").textContent=`Sesgo ${sideName}`; $("#homeDecision").textContent=decision; $("#homeDecision").className=`home-decision ${tone}`;
+  $("#homeHeadline").textContent=headline; $("#homeSummary").textContent=`Precio ${money(d.price)} · cambio 24h ${d.change>=0?"+":""}${fmt(d.change)}%. Revisa la entrada y exige R/B mínimo 1:3.`;
+  $("#homeConfidence").textContent=confidence; $("#homeRisk").textContent=risk; $("#homeUpdated").textContent=new Date().toLocaleTimeString("es-MX",{hour:"2-digit",minute:"2-digit"});
+  $("#homeReasons").innerHTML=homeReasonRows(best).map(r=>`<div class="reason-row ${r.tone}"><span>${r.icon}</span><p>${r.text}</p></div>`).join("");
+  $("#homeAnalyzeBtn").disabled=false; $("#homeAnalyzeBtn").dataset.symbol=symbol;
+  $("#homePaperBtn").dataset.symbol=symbol;
+}
 function activeScore(d,mode){return mode==="short"?d.shortScore:d.longScore}
 function activeDecision(d,mode){return mode==="short"?d.shortDecision:d.longDecision}
+function scoreBreakdownData(a,mode){
+  const factors=mode==="short"?a.shortFactors:a.longFactors;
+  const labels={trend:"Tendencia EMA",momentum:"Momentum RSI",strength:"Fuerza ADX",volume:"Volumen",volatility:"Volatilidad ATR",structure:"Estructura"};
+  return Object.keys(labels).map(key=>{
+    const quality=clamp(Number(factors?.[key]||0),0,1),weight=Number(state.weights[key]||0),points=quality*weight;
+    const tone=quality>=.8?"good":quality>=.5?"warn":quality<.3?"bad":"neutral";
+    const status=quality>=.8?"Fuerte":quality>=.5?"Parcial":quality<.3?"Débil":"Limitado";
+    return {key,label:labels[key],quality,weight,points,tone,status};
+  });
+}
+function trafficDecision(a,mode){
+  const score=activeScore(a,mode), rows=scoreBreakdownData(a,mode);
+  const bad=rows.filter(r=>r.quality<.3);
+  const tone=score>=85&&bad.length===0?"green":score>=70?"yellow":"red";
+  const title=tone==="green"?"🟢 OPERACIÓN PARA EVALUAR":tone==="yellow"?"🟡 ESPERAR CONFIRMACIÓN":"🔴 NO OPERAR";
+  const message=tone==="green"?"La lectura técnica cumple el nivel alto del sistema. Confirma entrada, stop y R/B antes de ejecutar.":tone==="yellow"?"Hay elementos favorables, pero todavía faltan condiciones para una entrada disciplinada.":"La evidencia técnica es insuficiente. Preservar el capital es la decisión correcta.";
+  const strongest=[...rows].sort((x,y)=>y.quality-x.quality).slice(0,2);
+  const weakest=[...rows].sort((x,y)=>x.quality-y.quality).slice(0,3);
+  const reasons=[...strongest.map(r=>({tone:"good",icon:"✓",text:`${r.label}: ${r.status.toLowerCase()} (${Math.round(r.quality*100)}%).`})),...weakest.filter(r=>!strongest.includes(r)).map(r=>({tone:r.quality<.3?"bad":"warn",icon:r.quality<.3?"×":"!",text:`${r.label}: ${r.status.toLowerCase()} (${Math.round(r.quality*100)}%).`}))];
+  const targets={trend:.8,momentum:.8,strength:.8,volume:.8,volatility:.5,structure:.5};
+  const needs=[];
+  if(score<85) needs.push(`Subir el score de ${score} a 85 o más.`);
+  rows.forEach(r=>{const target=targets[r.key]??.8;if(r.quality<target){
+    const detail=r.key==="strength"?`Esperar ADX de 25 o más (actual ${fmt(a.adx,1)}).`:r.key==="volume"?`Esperar volumen de al menos 1.0x el promedio (actual ${fmt(a.volumeRatio,2)}x).`:r.key==="momentum"?`Esperar que el RSI entre en una zona más favorable para ${mode==="long"?"Long":"Short"} (actual ${fmt(a.rsi,1)}).`:r.key==="trend"?`Esperar alineación más clara de precio, EMA20, EMA50 y EMA200 para ${mode==="long"?"Long":"Short"}.`:r.key==="structure"?`Esperar una ruptura o estructura de máximos y mínimos más clara.`:`Esperar una volatilidad más operable; ATR actual ${fmt(a.atrPct,2)}%.`;
+    needs.push(detail);
+  }});
+  if(!needs.length) needs.push("La lectura técnica ya está en verde. Solo falta validar entrada, stop y R/B mínimo 1:3 en el simulador.");
+  return {score,tone,title,message,reasons:reasons.slice(0,4),needs:[...new Set(needs)].slice(0,6)};
+}
+function renderTrafficLight(a,mode){
+  const card=$("#trafficCard");if(!card)return;
+  const t=trafficDecision(a,mode), light=$("#trafficLight");
+  $("#trafficTitle").textContent=t.title;$("#trafficMessage").textContent=t.message;
+  light.className=`traffic-light ${t.tone}`;light.setAttribute("aria-label",t.title.replace(/[🟢🟡🔴]/g,"").trim());
+  $("#trafficReasons").innerHTML=t.reasons.map(r=>`<div class="reason-row ${r.tone}"><span>${r.icon}</span><p>${r.text}</p></div>`).join("");
+  $("#trafficNeeds").innerHTML=`<strong>Para llegar a verde:</strong><ul>${t.needs.map(n=>`<li>${n}</li>`).join("")}</ul>`;
+}
+
+function renderScoreBreakdown(a,mode){
+  const box=$("#scoreBreakdown");if(!box)return;
+  const rows=scoreBreakdownData(a,mode),total=Math.round(rows.reduce((s,r)=>s+r.points,0));
+  $("#scoreWeightTotal").textContent=`Pesos: ${rows.reduce((s,r)=>s+r.weight,0)} · Score: ${total}`;
+  box.innerHTML=rows.map(r=>`<div class="score-factor ${r.tone}"><div class="score-factor-top"><div><strong>${r.label}</strong><small>${r.status} · calidad ${Math.round(r.quality*100)}%</small></div><b>+${r.points.toFixed(1)} / ${r.weight}</b></div><div class="factor-track"><span style="width:${r.quality*100}%"></span></div></div>`).join("");
+}
 function renderRanking(){
   const mode=$("#marketModeSelect")?.value||"long";
   const rows=state.assets.filter(s=>state.market[s]).map(s=>({s,d:state.market[s]})).sort((a,b)=>activeScore(b.d,mode)-activeScore(a.d,mode));
@@ -151,14 +235,14 @@ async function refreshAll(){
       const a=analyze(c);
       state.market[sym]={...a,price:+t.lastPrice,change:+t.priceChangePercent};
       ok++;
-      renderAssets();renderRanking();
+      renderAssets();renderRanking();renderHome();
     }catch(e){console.warn(sym,e)}
   }));
   const mode=$("#marketModeSelect")?.value||"long";
   const scores=Object.values(state.market).map(x=>activeScore(x,mode));
   const avg=scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length):0;
   $("#marketSummary").textContent=ok?`${ok} activos analizados · score ${mode==="long"?"Long":"Short"} medio ${avg}/100`:"No fue posible conectar con datos públicos";
-  renderRanking();
+  renderRanking();renderHome();
   $("#lastUpdate").textContent=new Date().toLocaleTimeString("es-MX",{hour:"2-digit",minute:"2-digit"});
   $("#refreshAllBtn").classList.remove("loading");
 }
@@ -178,7 +262,7 @@ async function refreshAnalysis(){
     $("#analysisPrice").textContent=money(a.price);
     $("#analysisChange").textContent=`Última vela: ${a.change>=0?"+":""}${fmt(a.change)}%`;
     $("#chartCaption").textContent=`${state.selected}/USDT · ${interval} · ${candles.length} velas`;
-    renderDiagnostic(a);drawPriceChart(candles,a);
+    renderDiagnostic(a);renderTrafficLight(a,mode);renderScoreBreakdown(a,mode);drawPriceChart(candles,a);
   }catch(e){$("#plainExplanation").textContent="No se pudieron descargar los datos. Revisa la conexión e intenta de nuevo."}
   $("#analysisView").classList.remove("loading");
 }
@@ -382,10 +466,13 @@ async function createPaperTrade(){
   const riskDist=Math.abs(entry-lv.stop),rewardDist=Math.abs(lv.target-entry),rr=riskDist?rewardDist/riskDist:0;
   const capital=+$("#paperCapital").value||0,riskPct=+$("#paperRiskPct").value||0,riskCash=capital*riskPct/100,qty=riskDist?riskCash/riskDist:0,potentialProfit=qty*rewardDist;
   if(rr<1) return alert("La ganancia potencial es menor que la pérdida. Ajusta stop u objetivo.");
-  state.paperTrades.unshift({id:now,symbol:sym,side,interval:int,entry,stop:lv.stop,target:lv.target,openedAt:now,status:"open",current:entry,score,capital,riskPct,riskCash,qty,potentialProfit,rr,
+  const checklist={trend:$("#checkTrend").checked,signal:$("#checkSignal").checked,risk:$("#checkRisk").checked,noImpulse:$("#checkNoImpulse").checked};
+  const completed=Object.values(checklist).filter(Boolean).length;
+  if(completed<3&&!confirm(`Solo completaste ${completed} de 4 controles. ¿Guardar de todos modos?`)) return;
+  state.paperTrades.unshift({id:now,symbol:sym,side,interval:int,entry,stop:lv.stop,target:lv.target,openedAt:now,status:"open",current:entry,score,capital,riskPct,riskCash,qty,potentialProfit,rr,checklist,
     snapshot:{longScore:a.longScore,shortScore:a.shortScore,rsi:a.rsi,adx:a.adx,atrPct:a.atrPct,volumeRatio:a.volumeRatio,trend:a.trend,ema20:a.e20.at(-1),ema50:a.e50.at(-1),ema200:a.e200.at(-1)},
     notes:$("#paperNotes").value.trim(),closedAt:null,exit:null,resultPct:null});
-  savePaperState();$("#paperNotes").value="";renderPaperTrades();alert("Prueba guardada. La app seguirá su resultado.");
+  savePaperState();$("#paperNotes").value="";["checkTrend","checkSignal","checkRisk","checkNoImpulse"].forEach(id=>$("#"+id).checked=false);renderPaperTrades();alert("Prueba guardada. La app seguirá su resultado.");
 }
 async function updatePaperTrades(){
   const open=state.paperTrades.filter(t=>t.status==="open");
@@ -419,20 +506,25 @@ function tradeCard(t){
   const cls={open:"status-open",win:"status-win",loss:"status-loss",manual:"status-manual"}[t.status];
   const current=t.status==="open"?(t.current||t.entry):t.exit;
   const running=(t.side==="long"?(current/t.entry-1):(t.entry/current-1))*100;
+  const pnlCash=(t.side==="long"?(current-t.entry):(t.entry-current))*(t.qty||0);
+  const checklistDone=t.checklist?Object.values(t.checklist).filter(Boolean).length:0;
   return `<article class="paper-trade"><div class="paper-head"><div><h3>${t.symbol}/USDT · ${t.side.toUpperCase()}</h3><div class="paper-meta">${t.interval} · ${new Date(t.openedAt).toLocaleString("es-MX")}</div></div><strong class="${cls}">${status}</strong></div>
-  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100</strong></div></div>
-  <div class="paper-snapshot"><span class="tag">RSI ${fmt(t.snapshot.rsi,1)}</span><span class="tag">ADX ${fmt(t.snapshot.adx,1)}</span><span class="tag">ATR ${fmt(t.snapshot.atrPct,2)}%</span><span class="tag">Vol ${fmt(t.snapshot.volumeRatio,2)}x</span><span class="tag">${t.snapshot.trend}</span></div>
+  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100</strong></div></div>
+  <div class="paper-snapshot"><span class="tag">Control ${checklistDone}/4</span><span class="tag">RSI ${fmt(t.snapshot.rsi,1)}</span><span class="tag">ADX ${fmt(t.snapshot.adx,1)}</span><span class="tag">ATR ${fmt(t.snapshot.atrPct,2)}%</span><span class="tag">Vol ${fmt(t.snapshot.volumeRatio,2)}x</span><span class="tag">${t.snapshot.trend}</span></div>
   ${t.notes?`<p class="paper-note">${t.notes.replace(/</g,"&lt;")}</p>`:""}<div class="paper-actions">${t.status==="open"?`<button class="ghost" data-close-paper="${t.id}">Cerrar manual</button>`:"<span></span>"}<button class="danger" data-delete-paper="${t.id}">Eliminar</button></div></article>`;
 }
 function renderPaperTrades(){
   const openCountEl=$("#paperOpenCount"); if(openCountEl) openCountEl.textContent=state.paperTrades.filter(t=>t.status==="open").length;
   if(!$("#paperOpenList"))return;
   const open=state.paperTrades.filter(t=>t.status==="open"),closed=state.paperTrades.filter(t=>t.status!=="open");
+  const filter=$("#paperFilter")?.value||"all";
+  const visible=closed.filter(t=>filter==="all"||(filter==="wins"&&(t.resultPct||0)>0)||(filter==="losses"&&(t.resultPct||0)<0)||filter===t.side);
   $("#paperOpenList").innerHTML=open.length?open.map(tradeCard).join(""):'<div class="notice">Todavía no hay operaciones simuladas abiertas.</div>';
-  $("#paperClosedList").innerHTML=closed.length?closed.map(tradeCard).join(""):'<div class="notice">El diario todavía no tiene resultados cerrados.</div>';
+  $("#paperClosedList").innerHTML=visible.length?visible.map(tradeCard).join(""):'<div class="notice">No hay operaciones que coincidan con este filtro.</div>';
   const wins=closed.filter(t=>t.status==="win"||t.resultPct>0).length,losses=closed.filter(t=>t.status==="loss"||t.resultPct<0).length,rate=closed.length?wins/closed.length*100:0,avg=closed.length?closed.reduce((s,t)=>s+(t.resultPct||0),0)/closed.length:0;
   const totalPct=closed.reduce((s,t)=>s+(t.resultPct||0),0),avgRR=closed.length?closed.reduce((s,t)=>s+(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop)||0),0)/closed.length:0;
-  $("#paperStats").innerHTML=[["Pruebas cerradas",closed.length],["Ganadoras",wins],["Perdedoras",losses],["Acierto",fmt(rate,1)+"%"],["Resultado acumulado",(totalPct>=0?"+":"")+fmt(totalPct,2)+"%"],["Resultado promedio",(avg>=0?"+":"")+fmt(avg,2)+"%"],["R/B promedio","1 : "+fmt(avgRR,2)]].map(([k,v])=>`<div class="result-card"><span>${k}</span><strong>${v}</strong></div>`).join("");
+  const totalCash=closed.reduce((s,t)=>s+((t.side==="long"?((t.exit||t.entry)-t.entry):(t.entry-(t.exit||t.entry)))*(t.qty||0)),0);
+  $("#paperStats").innerHTML=[["Pruebas cerradas",closed.length],["Ganadoras",wins],["Perdedoras",losses],["Acierto",fmt(rate,1)+"%"],["Resultado acumulado",(totalPct>=0?"+":"")+fmt(totalPct,2)+"%"],["Resultado en dinero",(totalCash>=0?"+":"")+money(totalCash)],["Resultado promedio",(avg>=0?"+":"")+fmt(avg,2)+"%"],["R/B promedio","1 : "+fmt(avgRR,2)]].map(([k,v])=>`<div class="result-card"><span>${k}</span><strong>${v}</strong></div>`).join("");
   renderPaperInsights(closed);
   $$('[data-close-paper]').forEach(b=>b.onclick=()=>closePaperManual(+b.dataset.closePaper));$$('[data-delete-paper]').forEach(b=>b.onclick=()=>deletePaper(+b.dataset.deletePaper));
 }
@@ -457,26 +549,63 @@ function renderPaperInsights(closed){
   box.innerHTML=`<h3>🧠 Qué está aprendiendo el Centro Quant</h3>${insights.length?`<ul>${insights.map(x=>`<li>${x}</li>`).join("")}</ul>`:`<p>Aún faltan operaciones repetidas bajo condiciones comparables para detectar un patrón confiable.</p>`}<small>Estas observaciones describen tu diario; no garantizan resultados futuros.</small>`;
 }
 
-function renderWeights(){
-  const names={trend:"Tendencia",momentum:"Momentum",strength:"Fuerza ADX",volume:"Volumen",volatility:"Volatilidad",structure:"Estructura"};
-  $("#weightsForm").innerHTML=Object.entries(names).map(([k,n])=>`<div class="weight-row"><label>${n}</label><input data-weight="${k}" type="number" min="0" max="100" value="${state.weights[k]}"></div>`).join("");
+function exportPaperCSV(){
+  const rows=state.paperTrades.map(t=>({
+    fecha:new Date(t.openedAt).toISOString(),activo:t.symbol,direccion:t.side,temporalidad:t.interval,
+    entrada:t.entry,stop:t.stop,objetivo:t.target,salida:t.exit||"",estado:t.status,
+    resultado_pct:t.resultPct??"",cantidad:t.qty||"",riesgo_dinero:t.riskCash||"",score:t.score,
+    rsi:t.snapshot?.rsi??"",adx:t.snapshot?.adx??"",volumen:t.snapshot?.volumeRatio??"",
+    notas:(t.notes||"").replace(/\n/g," ")
+  }));
+  if(!rows.length)return alert("No hay operaciones para exportar.");
+  const headers=Object.keys(rows[0]);
+  const csv=[headers.join(","),...rows.map(r=>headers.map(h=>`"${String(r[h]).replace(/"/g,'""')}"`).join(","))].join("\n");
+  const blob=new Blob(["\ufeff"+csv],{type:"text/csv;charset=utf-8"}),url=URL.createObjectURL(blob),a=document.createElement("a");
+  a.href=url;a.download=`centro-quant-diario-${new Date().toISOString().slice(0,10)}.csv`;a.click();URL.revokeObjectURL(url);
 }
+
+function updateWeightsTotal(){
+  const total=$$("[data-weight]").reduce((s,i)=>s+Number(i.value||0),0),el=$("#weightsTotal");
+  if(el){el.textContent=`${total} / 100`;el.className=total===100?"weight-total-ok":"weight-total-bad";}
+}
+function renderWeights(){
+  const names={trend:"Tendencia EMA",momentum:"Momentum RSI",strength:"Fuerza ADX",volume:"Volumen",volatility:"Volatilidad ATR",structure:"Estructura"};
+  $("#weightsForm").innerHTML=Object.entries(names).map(([k,n])=>`<div class="weight-row"><label><strong>${n}</strong><small>Peso máximo dentro del score</small></label><div class="weight-control"><input data-weight-range="${k}" type="range" min="0" max="50" step="1" value="${state.weights[k]}"><input data-weight="${k}" type="number" min="0" max="100" value="${state.weights[k]}"><span>pts</span></div></div>`).join("");
+  $$('[data-weight]').forEach(i=>i.addEventListener('input',()=>{const r=$(`[data-weight-range="${i.dataset.weight}"]`);if(r)r.value=i.value;updateWeightsTotal()}));
+  $$('[data-weight-range]').forEach(r=>r.addEventListener('input',()=>{const i=$(`[data-weight="${r.dataset.weightRange}"]`);if(i)i.value=r.value;updateWeightsTotal()}));
+  updateWeightsTotal();
+}
+function applyWeightPreset(name){
+  const presets={balanced:{trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10},trend:{trend:40,momentum:15,strength:20,volume:10,volatility:5,structure:10},momentum:{trend:20,momentum:30,strength:15,volume:20,volatility:5,structure:10}};
+  const p=presets[name];if(!p)return;state.weights={...p};renderWeights();
+}
+
 $("#saveWeightsBtn").onclick=()=>{
   let total=0,next={};$$("[data-weight]").forEach(i=>{next[i.dataset.weight]=+i.value;total+=+i.value});
   if(total!==100)return alert("Los pesos deben sumar exactamente 100. Ahora suman "+total+".");
   state.weights=next;localStorage.setItem("quant_weights",JSON.stringify(next));alert("Pesos guardados.");refreshAll();
 };
 $("#resetDataBtn").onclick=()=>{if(confirm("¿Borrar favoritos, pesos y configuración local?")){localStorage.clear();location.reload()}};
+$$(`[data-weight-preset]`).forEach(b=>b.onclick=()=>applyWeightPreset(b.dataset.weightPreset));
 $("#backToDashboard").onclick=()=>showView("dashboardView");
 $("#refreshAnalysisBtn").onclick=refreshAnalysis;
 $("#timeframeSelect").onchange=refreshAnalysis;
 $("#analysisModeSelect").onchange=refreshAnalysis;
 $("#marketModeSelect").onchange=()=>{renderRanking();refreshAll()};
 $("#refreshAllBtn").onclick=refreshAll;
+$("#homeAnalyzeBtn").onclick=()=>{const sym=$("#homeAnalyzeBtn").dataset.symbol;if(sym)openAnalysis(sym);};
+$("#homePaperBtn").onclick=()=>{const sym=$("#homePaperBtn").dataset.symbol;showView("paperView");fillAssetSelects();if(sym)$("#paperSymbol").value=sym;updatePaperPreview();};
+$("#homeMarketBtn").onclick=()=>showView("dashboardView");
+$("#homeBacktestBtn").onclick=()=>showView("backtestView");
 $("#savePaperBtn").onclick=()=>createPaperTrade().catch(e=>alert("No se pudo guardar la prueba: "+e.message));
-["paperSymbol","paperSide","paperInterval","paperEntry","paperStopMode","paperStop","paperTargetMode","paperTarget","paperCapital","paperRiskPct"].forEach(id=>$("#"+id)?.addEventListener("change",()=>previewPaper()));
+["paperSymbol","paperSide","paperInterval","paperEntry","paperStopMode","paperStop","paperTargetMode","paperTarget","paperCapital","paperRiskPct"].forEach(id=>{
+  $("#"+id)?.addEventListener("change",previewPaper);
+  $("#"+id)?.addEventListener("input",previewPaper);
+});
 $("#refreshPaperBtn").onclick=updatePaperTrades;
-["paperSymbol","paperSide","paperInterval","paperEntry","paperStopMode","paperStop","paperTargetMode","paperTarget"].forEach(id=>$("#"+id)?.addEventListener("change",previewPaper));
+$("#trafficNeedsBtn").onclick=()=>{const box=$("#trafficNeeds"),btn=$("#trafficNeedsBtn");const open=box.hidden;box.hidden=!open;btn.setAttribute("aria-expanded",open?"true":"false");btn.textContent=open?"Ocultar condiciones":"¿Qué tendría que pasar para ponerse en verde?";};
+$("#paperFilter").onchange=renderPaperTrades;
+$("#exportPaperBtn").onclick=exportPaperCSV;
 
-renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();refreshAll();updatePaperTrades();
+renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();renderHome();refreshAll();updatePaperTrades();
 if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(console.warn);

@@ -1,51 +1,13 @@
-# Centro de Trading Cuantitativo
+# Centro Quant v6.2 · Semáforo inteligente
 
-PWA personal sin servidor ni claves de exchange.
+Versión estable con motor de score explicable, simulador, diario y semáforo de decisión.
 
-## Probar localmente
-No abras `index.html` directamente. Usa un servidor local:
+## Semáforo
+- Verde: score de 85 o más y sin factores técnicos críticos.
+- Amarillo: score de 70 a 84 o confirmación incompleta.
+- Rojo: score menor de 70; no operar.
 
-```bash
-python3 -m http.server 8000
-```
+El semáforo valida la lectura técnica. Toda operación debe comprobar además entrada, stop, tamaño de posición y relación riesgo/beneficio mínima de 1:3 en el simulador.
 
-Luego abre `http://localhost:8000`.
-
-## Publicar gratis en GitHub Pages
-1. Crea un repositorio nuevo.
-2. Sube todos los archivos de esta carpeta conservando la estructura.
-3. En Settings > Pages, publica la rama `main` desde `/root`.
-4. Abre la dirección que genere GitHub.
-5. En iPhone: Safari > Compartir > Agregar a pantalla de inicio.
-
-## Datos
-La app consulta datos públicos de mercado de Binance. No pide API key ni puede ejecutar operaciones.
-
-## Primera versión
-- Favoritos
-- Precios de 24 h
-- Score cuantitativo
-- Análisis 4H, diario, semanal y mensual
-- EMA20, EMA50, EMA200, RSI, ADX, ATR y volumen
-- Backtesting de tres reglas predefinidas
-- Calculadora de tamaño de posición
-- Pesos configurables
-
-## Aviso
-Herramienta educativa y de investigación. Los resultados históricos no garantizan rendimientos futuros.
-
-## Versión 3
-- Pestaña Pruebas para paper trading
-- Long y Short simulados
-- Stop y objetivo por precio o porcentaje
-- Captura automática del score e indicadores al abrir la prueba
-- Revisión automática de objetivo/stop con velas posteriores
-- Diario local con estadísticas de acierto y resultado promedio
-
-Si stop y objetivo aparecen tocados dentro de una misma vela, la app registra pérdida de forma conservadora porque no puede conocer el orden intravela.
-
-## Versión 4
-- Cada indicador se puede tocar para abrir una explicación.
-- Medidor visual con zonas de referencia.
-- Estado en lenguaje sencillo: bajo, normal, fuerte, sobrecompra, etc.
-- El volumen usa la última vela cerrada para evitar valores artificialmente bajos.
+## Publicación
+Sube todos los archivos y carpetas a la raíz del repositorio de GitHub Pages. El caché v6.2.0 fuerza la actualización desde versiones anteriores.

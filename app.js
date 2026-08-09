@@ -642,6 +642,50 @@ function exportPaperCSV(){
   a.href=url;a.download=`centro-quant-diario-${new Date().toISOString().slice(0,10)}.csv`;a.click();URL.revokeObjectURL(url);
 }
 
+function downloadJSON(data,filename){
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json;charset=utf-8"});
+  const url=URL.createObjectURL(blob),a=document.createElement("a");
+  a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+}
+
+function createFullBackup(){
+  const data={};
+  for(let i=0;i<localStorage.length;i++){
+    const key=localStorage.key(i);
+    if(key&&key.startsWith("quant_")) data[key]=localStorage.getItem(key);
+  }
+  const backup={
+    app:"Centro Quant",
+    version:"6.5.1",
+    format:1,
+    createdAt:new Date().toISOString(),
+    data
+  };
+  downloadJSON(backup,`centro-quant-respaldo-${new Date().toISOString().slice(0,10)}.json`);
+}
+
+async function restoreFullBackup(file){
+  let parsed;
+  try{parsed=JSON.parse(await file.text())}catch(e){throw new Error("El archivo no es un JSON válido.")}
+  if(!parsed||parsed.app!=="Centro Quant"||parsed.format!==1||!parsed.data||typeof parsed.data!=="object"){
+    throw new Error("Este archivo no parece ser un respaldo válido de Centro Quant.");
+  }
+  const entries=Object.entries(parsed.data).filter(([k,v])=>k.startsWith("quant_")&&(typeof v==="string"||v===null));
+  if(!entries.length) throw new Error("El respaldo no contiene datos de Centro Quant.");
+  // Valida JSON de las claves estructuradas antes de tocar los datos actuales.
+  for(const [k,v] of entries){
+    if(v===null) continue;
+    if(["quant_assets","quant_weights","quant_paper_trades"].includes(k)) JSON.parse(v);
+  }
+  if(!confirm(`Se reemplazarán los datos actuales por el respaldo del ${parsed.createdAt?new Date(parsed.createdAt).toLocaleString("es-MX"):"archivo seleccionado"}. ¿Continuar?`)) return;
+  const oldKeys=[];
+  for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith("quant_"))oldKeys.push(k)}
+  oldKeys.forEach(k=>localStorage.removeItem(k));
+  entries.forEach(([k,v])=>{if(v!==null)localStorage.setItem(k,v)});
+  alert("Respaldo cargado correctamente. La aplicación se reiniciará para aplicar los datos.");
+  location.reload();
+}
+
 function updateWeightsTotal(){
   const total=$$("[data-weight]").reduce((s,i)=>s+Number(i.value||0),0),el=$("#weightsTotal");
   if(el){el.textContent=`${total} / 100`;el.className=total===100?"weight-total-ok":"weight-total-bad";}
@@ -663,7 +707,10 @@ $("#saveWeightsBtn").onclick=()=>{
   if(total!==100)return alert("Los pesos deben sumar exactamente 100. Ahora suman "+total+".");
   state.weights=next;localStorage.setItem("quant_weights",JSON.stringify(next));alert("Pesos guardados.");refreshAll();
 };
-$("#resetDataBtn").onclick=()=>{if(confirm("¿Borrar favoritos, pesos y configuración local?")){localStorage.clear();location.reload()}};
+$("#backupDataBtn").onclick=createFullBackup;
+$("#restoreDataBtn").onclick=()=>$("#restoreDataInput").click();
+$("#restoreDataInput").onchange=async e=>{const file=e.target.files?.[0];if(!file)return;try{await restoreFullBackup(file)}catch(err){alert("No se pudo cargar el respaldo: "+err.message)}finally{e.target.value=""}};
+$("#resetDataBtn").onclick=()=>{if(confirm("¿Borrar favoritos, pesos, operaciones y configuración local?")){localStorage.clear();location.reload()}};
 $$(`[data-weight-preset]`).forEach(b=>b.onclick=()=>applyWeightPreset(b.dataset.weightPreset));
 $("#backToDashboard").onclick=()=>showView("dashboardView");
 $("#refreshAnalysisBtn").onclick=refreshAnalysis;

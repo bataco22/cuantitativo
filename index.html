@@ -373,6 +373,12 @@
         </div>
         <div id="weightsForm" class="weights"></div>
         <button id="saveWeightsBtn" class="primary wide">Guardar y recalcular</button>
+        <div class="backup-tools">
+          <button id="backupDataBtn" type="button" class="secondary wide">Crear respaldo completo</button>
+          <button id="restoreDataBtn" type="button" class="ghost wide">Cargar respaldo</button>
+          <input id="restoreDataInput" type="file" accept="application/json,.json" hidden />
+          <small class="muted">El respaldo incluye activos, pesos, temporalidad de Inicio y todas las operaciones de Pruebas guardadas en este dispositivo.</small>
+        </div>
         <button id="resetDataBtn" class="danger wide">Restablecer aplicación</button>
       </div>
       <div class="notice">
@@ -380,7 +386,7 @@
       </div>
     </section>
   </main>
-  <div class="build-label">Centro Quant v6.5 · Consistencia cuantitativa</div>
+  <div class="build-label">Centro Quant v6.5.1 · Consistencia cuantitativa</div>
 
   <nav class="bottom-nav">
     <button data-view="homeView" class="active"><span>⌂</span>Inicio</button>
@@ -403,6 +409,6 @@
     </form>
   </dialog>
 
-  <script src="./app.js?v=6.5.0"></script>
+  <script src="./app.js?v=6.5.1"></script>
 </body>
 </html>

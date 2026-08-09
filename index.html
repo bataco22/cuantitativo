@@ -10,20 +10,20 @@
   <title>Centro de Trading Cuantitativo</title>
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
-  <link rel="stylesheet" href="./styles.css?v=6.5.0" />
+  <link rel="stylesheet" href="./styles.css?v=6.6.0" />
 </head>
 <body>
   <header class="app-header">
     <div>
       <p class="eyebrow">Uso personal · Datos públicos</p>
-      <div class="brand-line"><h1>Centro Quant</h1><span class="version-badge">v6.5</span></div>
+      <div class="brand-line"><h1>Centro Quant</h1><span class="version-badge">v6.6</span></div>
     </div>
     <button id="refreshAllBtn" class="icon-btn" aria-label="Actualizar">↻</button>
   </header>
 
   <main>
     <section id="homeView" class="view active home-v6">
-      <div class="v6-release-banner"><span class="release-dot"></span><div><strong>Centro Quant v6.5 activo</strong><small>Umbrales 85/70 · R/B mínimo 1:3 · calidad de operación.</small></div></div>
+      <div class="v6-release-banner"><span class="release-dot"></span><div><strong>Centro Quant v6.6 activo</strong><small>Backtest por Score · paper trading automático · R/B mínimo 1:3.</small></div></div>
 
       <article class="decision-hero">
         <div class="decision-topline">
@@ -206,8 +206,8 @@
       <div class="section-title">
         <div>
           <p class="eyebrow">Laboratorio</p>
-          <h2>Backtesting sencillo</h2>
-          <p>Prueba reglas sobre el historial descargado. Los resultados incluyen comisión estimada.</p>
+          <h2>Laboratorio automático</h2>
+          <p>La app recorre el historial y abre/cierra simulaciones automáticamente según el Score, stop y objetivo.</p>
         </div>
       </div>
 
@@ -218,17 +218,26 @@
           </label>
           <label>Temporalidad
             <select id="btInterval">
-              <option value="4h">4 horas</option>
-              <option value="1d" selected>Diario</option>
+              <option value="15m">15 minutos</option>
+              <option value="1h">1 hora</option>
+              <option value="4h" selected>4 horas</option>
+              <option value="1d">Diario</option>
               <option value="1w">Semanal</option>
             </select>
           </label>
-          <label>Regla de entrada
+          <label>Motor de entrada
             <select id="btPreset">
-              <option value="trend">Tendencia: EMA20 &gt; EMA50 y RSI 50–68</option>
-              <option value="pullback">Retroceso: precio &gt; EMA200 y cruza EMA20</option>
-              <option value="breakout">Ruptura: máximo 20 velas + volumen</option>
+              <option value="score" selected>Score Centro Quant automático</option>
+              <option value="trend">Clásico: tendencia EMA + RSI</option>
+              <option value="pullback">Clásico: retroceso EMA20</option>
+              <option value="breakout">Clásico: ruptura + volumen</option>
             </select>
+          </label>
+          <label>Score mínimo
+            <input id="btScoreThreshold" type="number" value="85" min="50" max="100" step="1" />
+          </label>
+          <label>Dirección
+            <select id="btDirection"><option value="auto" selected>Automática Long / Short</option><option value="long">Solo Long</option><option value="short">Solo Short</option></select>
           </label>
           <label>Capital inicial
             <input id="btCapital" type="number" value="10000" min="100" />
@@ -246,7 +255,8 @@
             <input id="btRisk" type="number" value="1" min="0.1" max="10" step="0.1" />
           </label>
         </div>
-        <button id="runBacktestBtn" class="primary wide">Ejecutar backtest</button>
+        <button id="runBacktestBtn" class="primary wide">Ejecutar simulaciones automáticas</button>
+        <div id="btAutoSummary" class="auto-summary">Usa Score 85 como punto de partida. Después puedes probar 80, 75 o 90 y comparar.</div>
       </div>
 
       <div id="btResults" class="results-grid hidden"></div>
@@ -264,11 +274,25 @@
       <div class="new-version-banner"><strong>✓ NUEVA BASE ACTIVA</strong><span>Pruebas fue reconstruida: riesgo, R/B, diario y aprendizaje.</span></div>
       <div class="section-title paper-hero">
         <div>
-          <p class="eyebrow">Laboratorio personal · v6.5</p>
+          <p class="eyebrow">Laboratorio personal · v6.6</p>
           <h2>Simulador y diario de operaciones</h2>
           <p>Planea la entrada, valida el riesgo y aprende de tus resultados sin usar dinero real.</p>
         </div>
         <button id="refreshPaperBtn" class="secondary">Revisar abiertas</button>
+      </div>
+
+      <div class="auto-paper-card">
+        <div class="auto-paper-head"><div><p class="eyebrow">Piloto automático</p><h3>Paper trading automático</h3><p>Cuando la app está abierta (y al volver a abrirla), revisa tus favoritos y crea simulaciones si alcanzan el Score indicado.</p></div><label class="switch-line"><input id="autoPaperEnabled" type="checkbox" /><span>Activar</span></label></div>
+        <div class="auto-paper-grid">
+          <label>Temporalidad<select id="autoPaperInterval"><option value="15m">15 min</option><option value="1h">1 hora</option><option value="4h" selected>4 horas</option><option value="1d">Diario</option><option value="1w">Semanal</option></select></label>
+          <label>Score mínimo<input id="autoPaperThreshold" type="number" min="50" max="100" value="85" /></label>
+          <label>Stop %<input id="autoPaperStop" type="number" min="0.2" step="0.1" value="3" /></label>
+          <label>Objetivo %<input id="autoPaperTarget" type="number" min="0.2" step="0.1" value="9" /></label>
+          <label>Riesgo %<input id="autoPaperRisk" type="number" min="0.1" max="10" step="0.1" value="1" /></label>
+          <label>Capital simulado<input id="autoPaperCapital" type="number" min="100" value="20000" /></label>
+        </div>
+        <div class="auto-paper-footer"><span id="autoPaperStatus">Apagado</span><button id="scanAutoPaperBtn" class="secondary">Revisar señales ahora</button></div>
+        <small class="muted">En iPhone una PWA no puede garantizar ejecución continua cuando está totalmente cerrada; el barrido se hace con la app abierta, al abrirla y al actualizar.</small>
       </div>
 
       <div class="paper-layout">
@@ -386,7 +410,7 @@
       </div>
     </section>
   </main>
-  <div class="build-label">Centro Quant v6.5.1 · Consistencia cuantitativa</div>
+  <div class="build-label">Centro Quant v6.6.0 · Simulación automática</div>
 
   <nav class="bottom-nav">
     <button data-view="homeView" class="active"><span>⌂</span>Inicio</button>
@@ -409,6 +433,6 @@
     </form>
   </dialog>
 
-  <script src="./app.js?v=6.5.1"></script>
+  <script src="./app.js?v=6.6.0"></script>
 </body>
 </html>

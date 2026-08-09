@@ -23,3 +23,11 @@ Sube todos los archivos y carpetas a la raíz del repositorio de GitHub Pages. E
 - Botón **Crear respaldo completo** en Sistema.
 - Botón **Cargar respaldo** para migrar datos entre versiones/dispositivos.
 - El respaldo incluye todas las claves locales de Centro Quant (`quant_*`), incluidas operaciones de Pruebas, activos, pesos y temporalidad de Inicio.
+
+
+## v6.6.0
+- Backtest automático usando el Score real de Centro Quant, con Long/Short y umbral configurable.
+- Temporalidades 15m, 1h, 4h, 1D y 1W en laboratorio.
+- Paper trading automático sobre favoritos cuando la PWA está abierta y al reabrir/actualizar.
+- Stop, objetivo, riesgo, capital y Score mínimo configurables.
+- Evita duplicar una señal de la misma vela y conserva todo en el respaldo local.

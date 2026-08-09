@@ -1,7 +1,7 @@
 {
-  "name": "Centro Quant v6.5",
-  "short_name": "Quant v6.5",
-  "description": "Centro Quant v6.5: análisis, simulador, diario y motor de score configurable.",
+  "name": "Centro Quant v6.6",
+  "short_name": "Quant v6.6",
+  "description": "Centro Quant v6.6: análisis, simulador, diario y motor de score configurable.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

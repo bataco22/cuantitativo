@@ -10,7 +10,8 @@ const state = {
   analysis: null,
   paperTrades: JSON.parse(localStorage.getItem("quant_paper_trades") || "[]"),
   pendingPaperSignal: null,
-  homeInterval: localStorage.getItem("quant_home_timeframe") || "1d"
+  homeInterval: localStorage.getItem("quant_home_timeframe") || "1d",
+  autoPaper: JSON.parse(localStorage.getItem("quant_auto_paper") || "null") || {enabled:false,interval:"4h",threshold:85,stopPct:3,targetPct:9,riskPct:1,capital:20000,lastSignals:{}}
 };
 
 const $ = s => document.querySelector(s);
@@ -208,6 +209,65 @@ async function refreshHomeTimeframe(interval){
   renderHome();
 }
 function activeScore(d,mode){return mode==="short"?d.shortScore:d.longScore}
+
+function scoreAtIndex(c,i,pre=null){
+  if(i<210)return null;
+  const closes=pre?.closes||c.map(x=>x.c),vols=pre?.vols||c.map(x=>x.v);
+  const e20=pre?.e20||ema(closes,20),e50=pre?.e50||ema(closes,50),e200=pre?.e200||ema(closes,200),rs=pre?.rs||rsi(closes),at=pre?.at||atr(c),ax=pre?.ax||adx(c),v20=pre?.v20||sma(vols,20);
+  const price=closes[i],atrPct=(at[i]||0)/(price||1)*100;
+  const look=c.slice(Math.max(0,i-11),i+1),highs=look.map(x=>x.h),lows=look.map(x=>x.l);
+  const prevHigh=highs.length>1?Math.max(...highs.slice(0,-1)):highs[0],prevLow=lows.length>1?Math.min(...lows.slice(0,-1)):lows[0];
+  const longFactors={trend:(price>e20[i]?.35:0)+(e20[i]>e50[i]?.35:0)+(e50[i]>e200[i]?.30:0),momentum:rs[i]>=50&&rs[i]<=68?1:rs[i]>=45&&rs[i]<75?.65:rs[i]<35?.45:.2,strength:ax[i]>=25?1:ax[i]>=18?.65:.3,volume:v20[i]&&vols[i]>v20[i]?1:.45,volatility:atrPct>=1&&atrPct<=6?1:atrPct<9?.6:.25,structure:(c[i].h>prevHigh?.55:0)+(c[i].l>prevLow?.45:0)};
+  const shortFactors={trend:(price<e20[i]?.35:0)+(e20[i]<e50[i]?.35:0)+(e50[i]<e200[i]?.30:0),momentum:rs[i]>=32&&rs[i]<=50?1:rs[i]>25&&rs[i]<55?.65:rs[i]>70?.45:.2,strength:ax[i]>=25?1:ax[i]>=18?.65:.3,volume:v20[i]&&vols[i]>v20[i]?1:.45,volatility:atrPct>=1&&atrPct<=6?1:atrPct<9?.6:.25,structure:(c[i].l<prevLow?.55:0)+(c[i].h<prevHigh?.45:0)};
+  const calc=f=>Math.round(Object.entries(f).reduce((sum,[k,v])=>sum+v*(state.weights[k]||0),0));
+  return {longScore:calc(longFactors),shortScore:calc(shortFactors),rsi:rs[i],adx:ax[i],atrPct,volumeRatio:v20[i]?vols[i]/v20[i]:1,trend:price>e20[i]&&e20[i]>e50[i]?"Alcista":price<e20[i]&&e20[i]<e50[i]?"Bajista":"Mixta",ema20:e20[i],ema50:e50[i],ema200:e200[i]};
+}
+function saveAutoPaper(){localStorage.setItem("quant_auto_paper",JSON.stringify(state.autoPaper))}
+function syncAutoPaperControls(){
+  const a=state.autoPaper;
+  if($("#autoPaperEnabled")) $("#autoPaperEnabled").checked=!!a.enabled;
+  if($("#autoPaperInterval")) $("#autoPaperInterval").value=a.interval;
+  if($("#autoPaperThreshold")) $("#autoPaperThreshold").value=a.threshold;
+  if($("#autoPaperStop")) $("#autoPaperStop").value=a.stopPct;
+  if($("#autoPaperTarget")) $("#autoPaperTarget").value=a.targetPct;
+  if($("#autoPaperRisk")) $("#autoPaperRisk").value=a.riskPct;
+  if($("#autoPaperCapital")) $("#autoPaperCapital").value=a.capital;
+  if($("#autoPaperStatus")) $("#autoPaperStatus").textContent=a.enabled?`Activo · ${a.interval} · score ≥ ${a.threshold}`:"Apagado";
+}
+function readAutoPaperControls(){
+  state.autoPaper={...state.autoPaper,
+    enabled:!!$("#autoPaperEnabled")?.checked,
+    interval:$("#autoPaperInterval")?.value||"4h",
+    threshold:+$("#autoPaperThreshold")?.value||85,
+    stopPct:+$("#autoPaperStop")?.value||3,
+    targetPct:+$("#autoPaperTarget")?.value||9,
+    riskPct:+$("#autoPaperRisk")?.value||1,
+    capital:+$("#autoPaperCapital")?.value||20000,
+    lastSignals:state.autoPaper.lastSignals||{}
+  };saveAutoPaper();syncAutoPaperControls();
+}
+async function scanAutoPaper(){
+  readAutoPaperControls(); const a=state.autoPaper;if(!a.enabled)return;
+  const status=$("#autoPaperStatus");if(status)status.textContent="Revisando señales…";
+  let opened=0;
+  for(const sym of state.assets){
+    try{
+      const candles=await getCandles(sym,a.interval,a.interval==="1w"?260:500),analysis=analyze(candles),signalIndex=Math.max(1,candles.length-2),signalCandle=candles[signalIndex];
+      const candidates=[{side:"long",score:analysis.longScore},{side:"short",score:analysis.shortScore}].filter(x=>x.score>=a.threshold).sort((x,y)=>y.score-x.score);
+      if(!candidates.length)continue;
+      const pick=candidates[0],key=`${sym}:${a.interval}:${pick.side}`,signalId=signalCandle.t;
+      const alreadyOpen=state.paperTrades.some(t=>t.status==="open"&&t.symbol===sym&&t.interval===a.interval&&t.side===pick.side&&t.auto);
+      if(alreadyOpen||a.lastSignals[key]===signalId)continue;
+      const entry=signalCandle.c,lv=paperLevels(entry,pick.side,"percent",a.stopPct,"percent",a.targetPct),riskDist=Math.abs(entry-lv.stop),rewardDist=Math.abs(lv.target-entry),rr=riskDist?rewardDist/riskDist:0;
+      if(rr<3)continue;
+      const riskCash=a.capital*a.riskPct/100,qty=riskDist?riskCash/riskDist:0;
+      state.paperTrades.unshift({id:Date.now()+opened,symbol:sym,side:pick.side,interval:a.interval,entry,stop:lv.stop,target:lv.target,openedAt:signalCandle.t,status:"open",current:analysis.price,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*rewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score",snapshot:{longScore:analysis.longScore,shortScore:analysis.shortScore,rsi:analysis.rsi,adx:analysis.adx,atrPct:analysis.atrPct,volumeRatio:analysis.volumeRatio,trend:analysis.trend,ema20:analysis.e20.at(-1),ema50:analysis.e50.at(-1),ema200:analysis.e200.at(-1)},notes:`AUTO · Score ≥ ${a.threshold}`,auto:true,closedAt:null,exit:null,resultPct:null});
+      a.lastSignals[key]=signalId;opened++;
+    }catch(e){console.warn("auto paper",sym,e)}
+  }
+  saveAutoPaper();savePaperState();renderPaperTrades();
+  if(status)status.textContent=`Activo · ${a.interval} · score ≥ ${a.threshold}${opened?` · ${opened} nueva${opened===1?"":"s"}`:" · sin señales nuevas"}`;
+}
 function activeDecision(d,mode){return mode==="short"?d.shortDecision:d.longDecision}
 function scoreBreakdownData(a,mode){
   const factors=mode==="short"?a.shortFactors:a.longFactors;
@@ -466,35 +526,45 @@ function entrySignal(preset,i,c,ind){
 async function runBacktest(){
   const btn=$("#runBacktestBtn");btn.classList.add("loading");btn.textContent="Calculando…";
   try{
-    const sym=$("#btSymbol").value,int=$("#btInterval").value,preset=$("#btPreset").value;
+    const sym=$("#btSymbol").value,int=$("#btInterval").value,mode=$("#btPreset").value;
     const stop=+$("#btStop").value/100,target=+$("#btTarget").value/100,fee=+$("#btFee").value/100,risk=+$("#btRisk").value/100;
-    const initial=+$("#btCapital").value,c=await getCandles(sym,int,1000),cl=c.map(x=>x.c);
-    const ind={e20:ema(cl,20),e50:ema(cl,50),e200:ema(cl,200),rs:rsi(cl),v20:sma(c.map(x=>x.v),20)};
-    let equity=initial,peak=initial,maxDD=0,wins=0,losses=0,trades=[],curve=[initial],inPos=false,entry=0,size=0,entryI=0;
-    for(let i=210;i<c.length;i++){
-      if(!inPos&&entrySignal(preset,i,c,ind)){
-        entry=c[i].c; const riskCash=equity*risk; size=riskCash/(entry*stop); inPos=true;entryI=i;
-      } else if(inPos){
-        const stopP=entry*(1-stop),targetP=entry*(1+target);let exit=null,reason="";
-        if(c[i].l<=stopP){exit=stopP;reason="stop"}
-        else if(c[i].h>=targetP){exit=targetP;reason="target"}
-        else if(i-entryI>=40){exit=c[i].c;reason="time"}
+    const initial=+$("#btCapital").value,threshold=+$("#btScoreThreshold")?.value||85,direction=$("#btDirection")?.value||"auto";
+    const c=await getCandles(sym,int,1000),cl=c.map(x=>x.c);
+    const vols=c.map(x=>x.v),ind={closes:cl,vols,e20:ema(cl,20),e50:ema(cl,50),e200:ema(cl,200),rs:rsi(cl),v20:sma(vols,20),at:atr(c),ax:adx(c)};
+    let equity=initial,peak=initial,maxDD=0,wins=0,losses=0,trades=[],curve=[initial],inPos=false,entry=0,size=0,entryI=0,side="long",entryScore=0;
+    for(let i=210;i<c.length-1;i++){
+      if(!inPos){
+        let signal=false;
+        if(mode==="score"){
+          const sc=scoreAtIndex(c,i,ind); if(!sc)continue;
+          const options=[];
+          if(direction!=="short"&&sc.longScore>=threshold)options.push({side:"long",score:sc.longScore});
+          if(direction!=="long"&&sc.shortScore>=threshold)options.push({side:"short",score:sc.shortScore});
+          options.sort((a,b)=>b.score-a.score);
+          if(options.length){side=options[0].side;entryScore=options[0].score;signal=true;}
+        }else{
+          signal=entrySignal(mode,i,c,ind);side="long";entryScore=0;
+        }
+        if(signal){entry=c[i].c;const riskCash=equity*risk;size=riskCash/(entry*stop);inPos=true;entryI=i;}
+      }else{
+        const stopP=side==="long"?entry*(1-stop):entry*(1+stop),targetP=side==="long"?entry*(1+target):entry*(1-target);let exit=null,reason="";
+        const stopHit=side==="long"?c[i].l<=stopP:c[i].h>=stopP,targetHit=side==="long"?c[i].h>=targetP:c[i].l<=targetP;
+        if(stopHit){exit=stopP;reason="stop"}else if(targetHit){exit=targetP;reason="target"}else if(i-entryI>=40){exit=c[i].c;reason="time"}
         if(exit){
-          const gross=(exit-entry)*size,fees=(entry+exit)*size*fee,pnl=gross-fees;
-          equity+=pnl;pnl>0?wins++:losses++;trades.push({pnl,reason});curve.push(equity);
-          peak=Math.max(peak,equity);maxDD=Math.max(maxDD,(peak-equity)/peak);inPos=false;
+          const gross=(side==="long"?(exit-entry):(entry-exit))*size,fees=(entry+exit)*size*fee,pnl=gross-fees;
+          equity+=pnl;pnl>0?wins++:losses++;trades.push({pnl,reason,side,score:entryScore});curve.push(equity);peak=Math.max(peak,equity);maxDD=Math.max(maxDD,(peak-equity)/peak);inPos=false;
         }
       }
     }
-    const n=trades.length,winRate=n?wins/n*100:0,total=(equity/initial-1)*100,avg=n?trades.reduce((s,t)=>s+t.pnl,0)/n:0;
-    const grossWin=trades.filter(t=>t.pnl>0).reduce((s,t)=>s+t.pnl,0),grossLoss=Math.abs(trades.filter(t=>t.pnl<0).reduce((s,t)=>s+t.pnl,0));
-    const pf=grossLoss?grossWin/grossLoss:0;
-    const vals=[["Operaciones",n],["Ganadoras",fmt(winRate,1)+"%"],["Resultado",fmt(total,2)+"%"],["Capital final",money(equity)],["Promedio / operación",money(avg)],["Profit factor",fmt(pf,2)],["Drawdown máximo",fmt(maxDD*100,2)+"%"]];
+    const n=trades.length,winRate=n?wins/n*100:0,total=(equity/initial-1)*100,avg=n?trades.reduce((sum,t)=>sum+t.pnl,0)/n:0;
+    const grossWin=trades.filter(t=>t.pnl>0).reduce((sum,t)=>sum+t.pnl,0),grossLoss=Math.abs(trades.filter(t=>t.pnl<0).reduce((sum,t)=>sum+t.pnl,0)),pf=grossLoss?grossWin/grossLoss:(grossWin>0?99:0);
+    const avgScore=n?trades.reduce((sum,t)=>sum+(t.score||0),0)/n:0,longs=trades.filter(t=>t.side==="long").length,shorts=trades.filter(t=>t.side==="short").length;
+    const vals=[["Operaciones",n],["Ganadoras",fmt(winRate,1)+"%"],["Resultado",(total>=0?"+":"")+fmt(total,2)+"%"],["Capital final",money(equity)],["Profit factor",fmt(pf,2)],["Drawdown máximo",fmt(maxDD*100,2)+"%"],["Long / Short",`${longs} / ${shorts}`],["Score promedio",mode==="score"?fmt(avgScore,1):"—"]];
     $("#btResults").innerHTML=vals.map(([k,v])=>`<div class="result-card"><span>${k}</span><strong>${v}</strong></div>`).join("");
-    $("#btResults").classList.remove("hidden");$("#btEquityWrap").classList.remove("hidden");
-    drawLineChart($("#equityChart"),[{values:curve}]);
+    $("#btResults").classList.remove("hidden");$("#btEquityWrap").classList.remove("hidden");drawLineChart($("#equityChart"),[{values:curve}]);
+    const note=$("#btAutoSummary");if(note)note.innerHTML=n?`<strong>${sym} ${int}</strong> · ${mode==="score"?`motor Score ≥ ${threshold}`:"regla clásica"} · ${n} operaciones simuladas sobre el historial disponible de Binance. ${total>0?"La combinación fue rentable en esta muestra.":"La combinación no fue rentable en esta muestra."}`:`No apareció ninguna entrada con estas reglas en el historial descargado.`;
   }catch(e){alert("No fue posible completar el backtest: "+e.message)}
-  btn.classList.remove("loading");btn.textContent="Ejecutar backtest";
+  btn.classList.remove("loading");btn.textContent="Ejecutar simulaciones automáticas";
 }
 $("#runBacktestBtn").onclick=runBacktest;
 
@@ -656,7 +726,7 @@ function createFullBackup(){
   }
   const backup={
     app:"Centro Quant",
-    version:"6.5.1",
+    version:"6.6.0",
     format:1,
     createdAt:new Date().toISOString(),
     data
@@ -675,7 +745,7 @@ async function restoreFullBackup(file){
   // Valida JSON de las claves estructuradas antes de tocar los datos actuales.
   for(const [k,v] of entries){
     if(v===null) continue;
-    if(["quant_assets","quant_weights","quant_paper_trades"].includes(k)) JSON.parse(v);
+    if(["quant_assets","quant_weights","quant_paper_trades","quant_auto_paper"].includes(k)) JSON.parse(v);
   }
   if(!confirm(`Se reemplazarán los datos actuales por el respaldo del ${parsed.createdAt?new Date(parsed.createdAt).toLocaleString("es-MX"):"archivo seleccionado"}. ¿Continuar?`)) return;
   const oldKeys=[];
@@ -728,10 +798,12 @@ $("#savePaperBtn").onclick=()=>createPaperTrade().catch(e=>alert("No se pudo gua
   $("#"+id)?.addEventListener("change",previewPaper);
   $("#"+id)?.addEventListener("input",previewPaper);
 });
-$("#refreshPaperBtn").onclick=updatePaperTrades;
+$("#refreshPaperBtn").onclick=async()=>{await updatePaperTrades();await scanAutoPaper();};
+["autoPaperEnabled","autoPaperInterval","autoPaperThreshold","autoPaperStop","autoPaperTarget","autoPaperRisk","autoPaperCapital"].forEach(id=>$("#"+id)?.addEventListener("change",()=>{readAutoPaperControls();if(state.autoPaper.enabled)scanAutoPaper();}));
+$("#scanAutoPaperBtn")?.addEventListener("click",scanAutoPaper);
 $("#trafficNeedsBtn").onclick=()=>{const box=$("#trafficNeeds"),btn=$("#trafficNeedsBtn");const open=box.hidden;box.hidden=!open;btn.setAttribute("aria-expanded",open?"true":"false");btn.textContent=open?"Ocultar condiciones":"¿Qué tendría que pasar para ponerse en verde?";};
 $("#paperFilter").onchange=renderPaperTrades;
 $("#exportPaperBtn").onclick=exportPaperCSV;
 
-renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();if($("#homeTimeframeSelect"))$("#homeTimeframeSelect").value=state.homeInterval;renderHome();refreshAll().then(()=>refreshHomeTimeframe(state.homeInterval));updatePaperTrades();
+renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();syncAutoPaperControls();if($("#homeTimeframeSelect"))$("#homeTimeframeSelect").value=state.homeInterval;renderHome();refreshAll().then(async()=>{await refreshHomeTimeframe(state.homeInterval);await updatePaperTrades();await scanAutoPaper();});
 if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(console.warn);

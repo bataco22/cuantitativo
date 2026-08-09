@@ -8,7 +8,9 @@ const state = {
   market: {},
   selected: null,
   analysis: null,
-  paperTrades: JSON.parse(localStorage.getItem("quant_paper_trades") || "[]")
+  paperTrades: JSON.parse(localStorage.getItem("quant_paper_trades") || "[]"),
+  pendingPaperSignal: null,
+  homeInterval: localStorage.getItem("quant_home_timeframe") || "1d"
 };
 
 const $ = s => document.querySelector(s);
@@ -109,45 +111,101 @@ async function getTicker(symbol){
   return api("/ticker/24hr",{symbol:symbol+"USDT"});
 }
 
+// Señal principal: 1D define contexto/tendencia y 4H afina la entrada.
+// Peso: 40% diario + 60% 4H. Si ambos marcos discrepan en el sesgo,
+// el score combinado recibe una penalización para evitar falsas certezas.
+function combineTimeframes(daily,entry4h,side){
+  const dScore=activeScore(daily,side), hScore=activeScore(entry4h,side);
+  const opposite=side==="long"?"short":"long";
+  const dailyAligned=dScore>=activeScore(daily,opposite);
+  const h4Aligned=hScore>=activeScore(entry4h,opposite);
+  let score=Math.round(dScore*.40+hScore*.60);
+  if(!dailyAligned) score-=12;
+  if(!h4Aligned) score-=8;
+  score=clamp(score,0,100);
+  return {score,dailyScore:dScore,entryScore:hScore,dailyAligned,h4Aligned};
+}
+function combinedSideData(marketRow,side){
+  if(!marketRow?.daily||!marketRow?.entry4h) return null;
+  return combineTimeframes(marketRow.daily,marketRow.entry4h,side);
+}
+
 function scoreClass(score){return score>=85?"good":score>=70?"warn":"bad"}
+const HOME_TF_LABELS={"15m":"15M","1h":"1H","4h":"4H","1d":"1D","1w":"1W"};
+function homeTfLabel(interval){return HOME_TF_LABELS[interval]||String(interval).toUpperCase()}
+function homeTfData(marketRow){
+  if(!marketRow)return null;
+  const tf=state.homeInterval||"1d";
+  return marketRow.timeframes?.[tf] || (tf==="1d"?marketRow.daily:tf==="4h"?marketRow.entry4h:null);
+}
 function homeBestOpportunity(){
   const rows=[];
   state.assets.forEach(symbol=>{
-    const d=state.market[symbol]; if(!d)return;
-    rows.push({symbol,side:"long",score:d.longScore,decision:d.longDecision,d});
-    rows.push({symbol,side:"short",score:d.shortScore,decision:d.shortDecision,d});
+    const row=state.market[symbol], d=homeTfData(row); if(!row||!d)return;
+    ["long","short"].forEach(side=>rows.push({symbol,side,score:activeScore(d,side),d,price:row.price,change:row.change}));
   });
   return rows.sort((a,b)=>b.score-a.score)[0]||null;
 }
 function homeReasonRows(best){
   if(!best)return [{tone:"neutral",icon:"•",text:"Esperando indicadores del mercado."}];
-  const rows=scoreBreakdownData(best.d,best.side).sort((a,b)=>b.points-a.points);
-  return rows.map(r=>({tone:r.tone,icon:r.tone==="good"?"✓":r.tone==="bad"?"×":"!",text:`${r.label}: aporta ${r.points.toFixed(1)} de ${r.weight} puntos (${r.status.toLowerCase()}).`}));
+  const tf=homeTfLabel(state.homeInterval), sideName=best.side==="long"?"LONG":"SHORT";
+  const details=scoreBreakdownData(best.d,best.side).sort((a,b)=>b.points-a.points).slice(0,4);
+  return [
+    {tone:scoreClass(best.score),icon:best.score>=70?"✓":"!",text:`Score ${tf} ${sideName}: ${best.score}/100.`},
+    ...details.map(r=>({tone:r.tone,icon:r.tone==="good"?"✓":r.tone==="bad"?"×":"!",text:`${tf} · ${r.label}: aporta ${r.points.toFixed(1)} de ${r.weight} puntos.`}))
+  ];
 }
 function renderHome(){
+  const tf=state.homeInterval||"1d", tfLabel=homeTfLabel(tf);
+  const selector=$("#homeTimeframeSelect");
+  if(selector && selector.value!==tf) selector.value=tf;
+  if($("#homeScoreLabel")) $("#homeScoreLabel").textContent=`Score ${tfLabel}`;
   const best=homeBestOpportunity();
-  const data=Object.values(state.market);
+  const data=Object.values(state.market).map(homeTfData).filter(Boolean);
   const analyzed=data.length;
-  const favorable=data.filter(d=>Math.max(d.longScore,d.shortScore)>=85).length;
-  const neutral=data.filter(d=>{const x=Math.max(d.longScore,d.shortScore);return x>=70&&x<85}).length;
-  const avoid=data.filter(d=>Math.max(d.longScore,d.shortScore)<70).length;
+  const maxScore=d=>Math.max(d.longScore||0,d.shortScore||0);
+  const favorable=data.filter(d=>maxScore(d)>=85).length;
+  const neutral=data.filter(d=>{const x=maxScore(d);return x>=70&&x<85}).length;
+  const avoid=data.filter(d=>maxScore(d)<70).length;
   if($("#homeAnalyzed")){ $("#homeAnalyzed").textContent=analyzed; $("#homeFavorable").textContent=favorable; $("#homeNeutral").textContent=neutral; $("#homeAvoid").textContent=avoid; }
   if(!best){
-    $("#homePair").textContent="Analizando favoritos…"; $("#homeScore").textContent="--"; $("#homeScore").parentElement.style.setProperty("--home-score",0);
+    $("#homePair").textContent=`Analizando favoritos · ${tfLabel}…`; $("#homeScore").textContent="--"; $("#homeScore").parentElement.style.setProperty("--home-score",0);
+    $("#homeReasons").innerHTML='<div class="reason-row neutral"><span>•</span><p>Cargando esta temporalidad.</p></div>';
     return;
   }
   const {symbol,side,score,d}=best, sideName=side==="long"?"LONG":"SHORT";
   const tone=scoreClass(score), confidence=score>=85?"Alta":score>=70?"Media":"Baja";
   const risk=d.atrPct<=3?"Bajo":d.atrPct<=6?"Medio":"Alto";
   const decision=score>=85?"FAVORABLE PARA EVALUAR":score>=70?"ESPERAR / VIGILAR":"EVITAR POR AHORA";
-  const headline=score>=85?`${symbol} tiene una lectura de nivel alto`:score>=70?`${symbol} merece vigilancia, pero aún falta confirmación`:`No hay una entrada disciplinada todavía`;
-  $("#homePair").textContent=`${symbol}/USDT · ${sideName}`; $("#homeScore").textContent=score; $("#homeScore").parentElement.style.setProperty("--home-score",score);
+  const headline=score>=85?`${symbol} tiene una lectura de nivel alto en ${tfLabel}`:score>=70?`${symbol} merece vigilancia en ${tfLabel}, pero aún falta confirmación`:`No hay una entrada disciplinada en ${tfLabel} todavía`;
+  $("#homePair").textContent=`${symbol}/USDT · ${sideName} · ${tfLabel}`; $("#homeScore").textContent=score; $("#homeScore").parentElement.style.setProperty("--home-score",score);
   $("#homeSide").textContent=`Sesgo ${sideName}`; $("#homeDecision").textContent=decision; $("#homeDecision").className=`home-decision ${tone}`;
-  $("#homeHeadline").textContent=headline; $("#homeSummary").textContent=`Precio ${money(d.price)} · cambio 24h ${d.change>=0?"+":""}${fmt(d.change)}%. Revisa la entrada y exige R/B mínimo 1:3.`;
+  $("#homeHeadline").textContent=headline; $("#homeSummary").textContent=`Score ${tfLabel} ${score}/100 · Precio ${money(best.price)} · cambio 24h ${best.change>=0?"+":""}${fmt(best.change)}%.`;
   $("#homeConfidence").textContent=confidence; $("#homeRisk").textContent=risk; $("#homeUpdated").textContent=new Date().toLocaleTimeString("es-MX",{hour:"2-digit",minute:"2-digit"});
   $("#homeReasons").innerHTML=homeReasonRows(best).map(r=>`<div class="reason-row ${r.tone}"><span>${r.icon}</span><p>${r.text}</p></div>`).join("");
   $("#homeAnalyzeBtn").disabled=false; $("#homeAnalyzeBtn").dataset.symbol=symbol;
   $("#homePaperBtn").dataset.symbol=symbol;
+  state.pendingPaperSignal={symbol,side,interval:tf,score,scoreType:"timeframe",snapshot:{longScore:d.longScore,shortScore:d.shortScore,rsi:d.rsi,adx:d.adx,atrPct:d.atrPct,volumeRatio:d.volumeRatio,trend:d.trend,ema20:d.e20.at(-1),ema50:d.e50.at(-1),ema200:d.e200.at(-1)},createdAt:Date.now()};
+}
+async function refreshHomeTimeframe(interval){
+  state.homeInterval=interval;
+  localStorage.setItem("quant_home_timeframe",interval);
+  renderHome();
+  const missing=state.assets.filter(sym=>!state.market[sym]?.timeframes?.[interval]);
+  if(!missing.length){renderHome();return;}
+  const selector=$("#homeTimeframeSelect"); if(selector) selector.disabled=true;
+  await Promise.all(missing.map(async sym=>{
+    try{
+      const candles=await getCandles(sym,interval,interval==="1w"?260:500);
+      const a=analyze(candles);
+      const row=state.market[sym]||(state.market[sym]={timeframes:{}});
+      row.timeframes=row.timeframes||{}; row.timeframes[interval]=a;
+      if(interval==="1d") row.daily=a; if(interval==="4h") row.entry4h=a;
+      renderHome();
+    }catch(e){console.warn("Home timeframe",sym,interval,e)}
+  }));
+  if(selector) selector.disabled=false;
+  renderHome();
 }
 function activeScore(d,mode){return mode==="short"?d.shortScore:d.longScore}
 function activeDecision(d,mode){return mode==="short"?d.shortDecision:d.longDecision}
@@ -244,9 +302,10 @@ async function refreshAll(){
   let ok=0;
   await Promise.all(state.assets.map(async sym=>{
     try{
-      const [t,c]=await Promise.all([getTicker(sym),getCandles(sym,"1d",260)]);
-      const a=analyze(c);
-      state.market[sym]={...a,price:+t.lastPrice,change:+t.priceChangePercent};
+      const [t,c1d,c4h]=await Promise.all([getTicker(sym),getCandles(sym,"1d",260),getCandles(sym,"4h",500)]);
+      const daily=analyze(c1d),entry4h=analyze(c4h);
+      state.market[sym]={daily,entry4h,timeframes:{"1d":daily,"4h":entry4h},price:+t.lastPrice,change:+t.priceChangePercent,
+        longScore:daily.longScore,shortScore:daily.shortScore,longDecision:daily.longDecision,shortDecision:daily.shortDecision};
       ok++;
       renderAssets();renderRanking();renderHome();
     }catch(e){console.warn(sym,e)}
@@ -460,7 +519,9 @@ async function previewPaper(){
     const candles=await getCandles(sym,int,500),a=analyze(candles),entry=+$("#paperEntry").value||a.price;
     if(!$("#paperEntry").value) $("#paperEntry").value=entry;
     const lv=paperLevels(entry,side,$("#paperStopMode").value,+$("#paperStop").value,$("#paperTargetMode").value,+$("#paperTarget").value);
-    const score=side==="long"?a.longScore:a.shortScore;
+    const pending=state.pendingPaperSignal;
+    const usePending=pending&&pending.symbol===sym&&pending.side===side&&pending.interval===int;
+    const score=usePending?pending.score:(side==="long"?a.longScore:a.shortScore);
     const riskDist=Math.abs(entry-lv.stop),rewardDist=Math.abs(lv.target-entry),rr=riskDist?rewardDist/riskDist:0;
     const capital=+$("#paperCapital").value||0,riskPct=+$("#paperRiskPct").value||0,riskCash=capital*riskPct/100,qty=riskDist?riskCash/riskDist:0,potential=qty*rewardDist;
     const warning=rr<3?`<div class="trade-warning">⛔ Relación 1:${fmt(rr,2)}. No se puede guardar: tu mínimo es 1:3.</div>`:`<div class="trade-ok">✓ Relación 1:${fmt(rr,2)} cumple tu regla mínima.</div>`;
@@ -476,7 +537,9 @@ async function createPaperTrade(){
   const lv=paperLevels(entry,side,$("#paperStopMode").value,sv,$("#paperTargetMode").value,tv);
   if(side==="long"&&!(lv.stop<entry&&lv.target>entry)) return alert("En Long, el stop debe quedar debajo y el objetivo arriba de la entrada.");
   if(side==="short"&&!(lv.stop>entry&&lv.target<entry)) return alert("En Short, el stop debe quedar arriba y el objetivo debajo de la entrada.");
-  const now=Date.now(),score=side==="long"?a.longScore:a.shortScore;
+  const now=Date.now(),pending=state.pendingPaperSignal;
+  const usePending=pending&&pending.symbol===sym&&pending.side===side&&pending.interval===int;
+  const score=usePending?pending.score:(side==="long"?a.longScore:a.shortScore);
   const riskDist=Math.abs(entry-lv.stop),rewardDist=Math.abs(lv.target-entry),rr=riskDist?rewardDist/riskDist:0;
   const capital=+$("#paperCapital").value||0,riskPct=+$("#paperRiskPct").value||0,riskCash=capital*riskPct/100,qty=riskDist?riskCash/riskDist:0,potentialProfit=qty*rewardDist;
   if(rr<3) return alert(`Esta operación tiene R/B 1:${fmt(rr,2)}. Tu regla mínima es 1:3; ajusta el stop o el objetivo antes de guardarla.`);
@@ -484,9 +547,10 @@ async function createPaperTrade(){
   const completed=Object.values(checklist).filter(Boolean).length;
   if(completed<3&&!confirm(`Solo completaste ${completed} de 4 controles. ¿Guardar de todos modos?`)) return;
   state.paperTrades.unshift({id:now,symbol:sym,side,interval:int,entry,stop:lv.stop,target:lv.target,openedAt:now,status:"open",current:entry,score,capital,riskPct,riskCash,qty,potentialProfit,rr,checklist,
-    snapshot:{longScore:a.longScore,shortScore:a.shortScore,rsi:a.rsi,adx:a.adx,atrPct:a.atrPct,volumeRatio:a.volumeRatio,trend:a.trend,ema20:a.e20.at(-1),ema50:a.e50.at(-1),ema200:a.e200.at(-1)},
+    scoreType:usePending&&pending.combo?"1D+4H":"timeframe",scoreDaily:usePending&&pending.combo?pending.combo.dailyScore:null,score4h:usePending&&pending.combo?pending.combo.entryScore:null,
+    snapshot:usePending?pending.snapshot:{longScore:a.longScore,shortScore:a.shortScore,rsi:a.rsi,adx:a.adx,atrPct:a.atrPct,volumeRatio:a.volumeRatio,trend:a.trend,ema20:a.e20.at(-1),ema50:a.e50.at(-1),ema200:a.e200.at(-1)},
     notes:$("#paperNotes").value.trim(),closedAt:null,exit:null,resultPct:null});
-  savePaperState();$("#paperNotes").value="";["checkTrend","checkSignal","checkRisk","checkNoImpulse"].forEach(id=>$("#"+id).checked=false);renderPaperTrades();alert("Prueba guardada. La app seguirá su resultado.");
+  savePaperState();state.pendingPaperSignal=null;$("#paperNotes").value="";["checkTrend","checkSignal","checkRisk","checkNoImpulse"].forEach(id=>$("#"+id).checked=false);renderPaperTrades();alert("Prueba guardada. La app seguirá su resultado.");
 }
 async function updatePaperTrades(){
   const open=state.paperTrades.filter(t=>t.status==="open");
@@ -523,7 +587,7 @@ function tradeCard(t){
   const pnlCash=(t.side==="long"?(current-t.entry):(t.entry-current))*(t.qty||0);
   const checklistDone=t.checklist?Object.values(t.checklist).filter(Boolean).length:0;
   return `<article class="paper-trade"><div class="paper-head"><div><h3>${t.symbol}/USDT · ${t.side.toUpperCase()}</h3><div class="paper-meta">${t.interval} · ${new Date(t.openedAt).toLocaleString("es-MX")}</div></div><strong class="${cls}">${status}</strong></div>
-  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100</strong></div></div>
+  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
   <div class="paper-snapshot"><span class="tag">Control ${checklistDone}/4</span><span class="tag">RSI ${fmt(t.snapshot.rsi,1)}</span><span class="tag">ADX ${fmt(t.snapshot.adx,1)}</span><span class="tag">ATR ${fmt(t.snapshot.atrPct,2)}%</span><span class="tag">Vol ${fmt(t.snapshot.volumeRatio,2)}x</span><span class="tag">${t.snapshot.trend}</span></div>
   ${t.notes?`<p class="paper-note">${t.notes.replace(/</g,"&lt;")}</p>`:""}<div class="paper-actions">${t.status==="open"?`<button class="ghost" data-close-paper="${t.id}">Cerrar manual</button>`:"<span></span>"}<button class="danger" data-delete-paper="${t.id}">Eliminar</button></div></article>`;
 }
@@ -607,8 +671,9 @@ $("#timeframeSelect").onchange=refreshAnalysis;
 $("#analysisModeSelect").onchange=refreshAnalysis;
 $("#marketModeSelect").onchange=()=>{renderRanking();refreshAll()};
 $("#refreshAllBtn").onclick=refreshAll;
-$("#homeAnalyzeBtn").onclick=()=>{const sym=$("#homeAnalyzeBtn").dataset.symbol;if(sym)openAnalysis(sym);};
-$("#homePaperBtn").onclick=()=>{const sym=$("#homePaperBtn").dataset.symbol;showView("paperView");fillAssetSelects();if(sym)$("#paperSymbol").value=sym;updatePaperPreview();};
+$("#homeTimeframeSelect").onchange=e=>refreshHomeTimeframe(e.target.value);
+$("#homeAnalyzeBtn").onclick=()=>{const sym=$("#homeAnalyzeBtn").dataset.symbol;if($("#timeframeSelect"))$("#timeframeSelect").value=state.homeInterval;if(sym)openAnalysis(sym);};
+$("#homePaperBtn").onclick=()=>{const sym=$("#homePaperBtn").dataset.symbol;showView("paperView");fillAssetSelects();if(sym)$("#paperSymbol").value=sym;if(state.pendingPaperSignal){$("#paperSide").value=state.pendingPaperSignal.side;$("#paperInterval").value=state.pendingPaperSignal.interval||"1d";}previewPaper();};
 $("#homeMarketBtn").onclick=()=>showView("dashboardView");
 $("#homeBacktestBtn").onclick=()=>showView("backtestView");
 $("#savePaperBtn").onclick=()=>createPaperTrade().catch(e=>alert("No se pudo guardar la prueba: "+e.message));
@@ -621,5 +686,5 @@ $("#trafficNeedsBtn").onclick=()=>{const box=$("#trafficNeeds"),btn=$("#trafficN
 $("#paperFilter").onchange=renderPaperTrades;
 $("#exportPaperBtn").onclick=exportPaperCSV;
 
-renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();renderHome();refreshAll();updatePaperTrades();
+renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();if($("#homeTimeframeSelect"))$("#homeTimeframeSelect").value=state.homeInterval;renderHome();refreshAll().then(()=>refreshHomeTimeframe(state.homeInterval));updatePaperTrades();
 if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(console.warn);

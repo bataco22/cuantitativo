@@ -1,5 +1,7 @@
 
 const API_BASE = "https://data-api.binance.vision/api/v3";
+const COINGECKO_MARKETS = "https://api.coingecko.com/api/v3/coins/markets";
+const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS","PYUSD","USD1","BUSD","FRAX","LUSD","GUSD","USDP","EURC","EURI"]);
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const state = {
@@ -11,7 +13,7 @@ const state = {
   paperTrades: JSON.parse(localStorage.getItem("quant_paper_trades") || "[]"),
   pendingPaperSignal: null,
   homeInterval: localStorage.getItem("quant_home_timeframe") || "1d",
-  autoPaper: JSON.parse(localStorage.getItem("quant_auto_paper") || "null") || {enabled:false,interval:"4h",threshold:85,stopPct:3,targetPct:9,riskPct:1,capital:20000,lastSignals:{}}
+  autoPaper: JSON.parse(localStorage.getItem("quant_auto_paper") || "null") || {enabled:false,interval:"4h",threshold:85,stopPct:3,targetPct:9,riskPct:1,capital:20000,lastSignals:{},universe:"top100",minQuoteVolume:5000000}
 };
 
 const $ = s => document.querySelector(s);
@@ -110,6 +112,28 @@ async function getCandles(symbol,interval="1d",limit=500){
 }
 async function getTicker(symbol){
   return api("/ticker/24hr",{symbol:symbol+"USDT"});
+}
+
+async function getScannerUniverse(){
+  // Universo: Top 100 por capitalización. CoinGecko se usa porque ofrece este ranking
+  // sin clave en navegador; después Binance valida que el par USDT sea operable.
+  let ranked=[];
+  try{
+    const u=new URL(COINGECKO_MARKETS);u.searchParams.set("vs_currency","usd");u.searchParams.set("order","market_cap_desc");u.searchParams.set("per_page","100");u.searchParams.set("page","1");u.searchParams.set("sparkline","false");
+    const r=await fetch(u,{cache:"no-store"});if(!r.ok)throw new Error("ranking "+r.status);
+    ranked=(await r.json()).map(x=>String(x.symbol||"").toUpperCase()).filter(Boolean);
+  }catch(e){console.warn("ranking market cap",e)}
+  const [exchange,tickers]=await Promise.all([api("/exchangeInfo"),api("/ticker/24hr")]);
+  const tradable=new Set(exchange.symbols.filter(x=>x.status==="TRADING"&&x.quoteAsset==="USDT"&&x.isSpotTradingAllowed!==false).map(x=>x.baseAsset));
+  const volume=new Map(tickers.filter(x=>x.symbol.endsWith("USDT")).map(x=>[x.symbol.slice(0,-4),+x.quoteVolume||0]));
+  if(!ranked.length) ranked=[...tradable].sort((a,b)=>(volume.get(b)||0)-(volume.get(a)||0)).slice(0,100);
+  const minVol=Number(state.autoPaper.minQuoteVolume||5000000);
+  return [...new Set(ranked)].filter(x=>!STABLE_ASSETS.has(x)&&tradable.has(x)&&(volume.get(x)||0)>=minVol);
+}
+async function mapWithConcurrency(items,limit,worker){
+  const out=[];let next=0;
+  async function run(){while(next<items.length){const i=next++;try{out[i]=await worker(items[i],i)}catch(e){out[i]=null}}}
+  await Promise.all(Array.from({length:Math.min(limit,items.length)},run));return out;
 }
 
 // Señal principal: 1D define contexto/tendencia y 4H afina la entrada.
@@ -243,31 +267,35 @@ function readAutoPaperControls(){
     targetPct:+$("#autoPaperTarget")?.value||9,
     riskPct:+$("#autoPaperRisk")?.value||1,
     capital:+$("#autoPaperCapital")?.value||20000,
+    universe:"top100", minQuoteVolume:5000000,
     lastSignals:state.autoPaper.lastSignals||{}
   };saveAutoPaper();syncAutoPaperControls();
 }
 async function scanAutoPaper(){
   readAutoPaperControls(); const a=state.autoPaper;if(!a.enabled)return;
-  const status=$("#autoPaperStatus");if(status)status.textContent="Revisando señales…";
-  let opened=0;
-  for(const sym of state.assets){
+  const status=$("#autoPaperStatus");if(status)status.textContent="Preparando Top 100 y filtros…";
+  let opened=0, universe=[];
+  try{universe=await getScannerUniverse()}catch(e){console.warn("scanner universe",e);if(status)status.textContent="No se pudo cargar el universo de mercado";return}
+  if(status)status.textContent=`Escaneando ${universe.length} criptos aptas del Top 100…`;
+  await mapWithConcurrency(universe,6,async sym=>{
     try{
       const candles=await getCandles(sym,a.interval,a.interval==="1w"?260:500),analysis=analyze(candles),signalIndex=Math.max(1,candles.length-2),signalCandle=candles[signalIndex];
       const candidates=[{side:"long",score:analysis.longScore},{side:"short",score:analysis.shortScore}].filter(x=>x.score>=a.threshold).sort((x,y)=>y.score-x.score);
-      if(!candidates.length)continue;
+      if(!candidates.length)return;
       const pick=candidates[0],key=`${sym}:${a.interval}:${pick.side}`,signalId=signalCandle.t;
       const alreadyOpen=state.paperTrades.some(t=>t.status==="open"&&t.symbol===sym&&t.interval===a.interval&&t.side===pick.side&&t.auto);
-      if(alreadyOpen||a.lastSignals[key]===signalId)continue;
+      if(alreadyOpen||a.lastSignals[key]===signalId)return;
       const entry=signalCandle.c,lv=paperLevels(entry,pick.side,"percent",a.stopPct,"percent",a.targetPct),riskDist=Math.abs(entry-lv.stop),rewardDist=Math.abs(lv.target-entry),rr=riskDist?rewardDist/riskDist:0;
-      if(rr<3)continue;
+      if(rr<3)return;
       const riskCash=a.capital*a.riskPct/100,qty=riskDist?riskCash/riskDist:0;
-      state.paperTrades.unshift({id:Date.now()+opened,symbol:sym,side:pick.side,interval:a.interval,entry,stop:lv.stop,target:lv.target,openedAt:signalCandle.t,status:"open",current:analysis.price,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*rewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score",snapshot:{longScore:analysis.longScore,shortScore:analysis.shortScore,rsi:analysis.rsi,adx:analysis.adx,atrPct:analysis.atrPct,volumeRatio:analysis.volumeRatio,trend:analysis.trend,ema20:analysis.e20.at(-1),ema50:analysis.e50.at(-1),ema200:analysis.e200.at(-1)},notes:`AUTO · Score ≥ ${a.threshold}`,auto:true,closedAt:null,exit:null,resultPct:null});
+      state.paperTrades.unshift({id:Date.now()+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry,stop:lv.stop,target:lv.target,openedAt:signalCandle.t,status:"open",current:analysis.price,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*rewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:{longScore:analysis.longScore,shortScore:analysis.shortScore,rsi:analysis.rsi,adx:analysis.adx,atrPct:analysis.atrPct,volumeRatio:analysis.volumeRatio,trend:analysis.trend,ema20:analysis.e20.at(-1),ema50:analysis.e50.at(-1),ema200:analysis.e200.at(-1)},notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez`,auto:true,closedAt:null,exit:null,resultPct:null});
       a.lastSignals[key]=signalId;opened++;
     }catch(e){console.warn("auto paper",sym,e)}
-  }
+  });
   saveAutoPaper();savePaperState();renderPaperTrades();
-  if(status)status.textContent=`Activo · ${a.interval} · score ≥ ${a.threshold}${opened?` · ${opened} nueva${opened===1?"":"s"}`:" · sin señales nuevas"}`;
+  if(status)status.textContent=`Activo · Top 100 → ${universe.length} aptas · ${a.interval} · score ≥ ${a.threshold}${opened?` · ${opened} nueva${opened===1?"":"s"}`:" · sin señales nuevas"}`;
 }
+
 function activeDecision(d,mode){return mode==="short"?d.shortDecision:d.longDecision}
 function scoreBreakdownData(a,mode){
   const factors=mode==="short"?a.shortFactors:a.longFactors;

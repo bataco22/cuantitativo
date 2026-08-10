@@ -274,7 +274,7 @@
       <div class="new-version-banner"><strong>✓ NUEVA BASE ACTIVA</strong><span>Pruebas fue reconstruida: riesgo, R/B, diario y aprendizaje.</span></div>
       <div class="section-title paper-hero">
         <div>
-          <p class="eyebrow">Laboratorio personal · v6.6</p>
+          <p class="eyebrow">Laboratorio personal · v6.7</p>
           <h2>Simulador y diario de operaciones</h2>
           <p>Planea la entrada, valida el riesgo y aprende de tus resultados sin usar dinero real.</p>
         </div>
@@ -282,7 +282,7 @@
       </div>
 
       <div class="auto-paper-card">
-        <div class="auto-paper-head"><div><p class="eyebrow">Piloto automático</p><h3>Paper trading automático</h3><p>Cuando la app está abierta (y al volver a abrirla), revisa tus favoritos y crea simulaciones si alcanzan el Score indicado.</p></div><label class="switch-line"><input id="autoPaperEnabled" type="checkbox" /><span>Activar</span></label></div>
+        <div class="auto-paper-head"><div><p class="eyebrow">Piloto automático</p><h3>Paper trading automático</h3><p>Cuando la app está abierta (y al volver a abrirla), escanea el Top 100 por capitalización, elimina stablecoins y pares sin suficiente liquidez en Binance, y crea simulaciones solo si alcanzan el Score indicado.</p></div><label class="switch-line"><input id="autoPaperEnabled" type="checkbox" /><span>Activar</span></label></div>
         <div class="auto-paper-grid">
           <label>Temporalidad<select id="autoPaperInterval"><option value="15m">15 min</option><option value="1h">1 hora</option><option value="4h" selected>4 horas</option><option value="1d">Diario</option><option value="1w">Semanal</option></select></label>
           <label>Score mínimo<input id="autoPaperThreshold" type="number" min="50" max="100" value="85" /></label>
@@ -291,6 +291,7 @@
           <label>Riesgo %<input id="autoPaperRisk" type="number" min="0.1" max="10" step="0.1" value="1" /></label>
           <label>Capital simulado<input id="autoPaperCapital" type="number" min="100" value="20000" /></label>
         </div>
+        <div class="scanner-universe-note"><strong>Radar de mercado:</strong> Top 100 → filtro de stablecoins → par USDT activo → liquidez mínima → Score Long/Short → R/B mínimo 1:3.</div>
         <div class="auto-paper-footer"><span id="autoPaperStatus">Apagado</span><button id="scanAutoPaperBtn" class="secondary">Revisar señales ahora</button></div>
         <small class="muted">En iPhone una PWA no puede garantizar ejecución continua cuando está totalmente cerrada; el barrido se hace con la app abierta, al abrirla y al actualizar.</small>
       </div>

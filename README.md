@@ -1,6 +1,6 @@
 # Centro Quant v6.3 · Semáforo inteligente
 
-Versión estable con motor de score explicable, simulador, diario y semáforo de decisión.
+Versión con radar Top 100 con motor de score explicable, simulador, diario y semáforo de decisión.
 
 ## Semáforo
 - Verde: score de 85 o más y sin factores técnicos críticos.
@@ -31,3 +31,11 @@ Sube todos los archivos y carpetas a la raíz del repositorio de GitHub Pages. E
 - Paper trading automático sobre favoritos cuando la PWA está abierta y al reabrir/actualizar.
 - Stop, objetivo, riesgo, capital y Score mínimo configurables.
 - Evita duplicar una señal de la misma vela y conserva todo en el respaldo local.
+
+
+## v6.7
+- Paper trading automático escanea Top 100 por capitalización (ranking público CoinGecko).
+- Excluye stablecoins y exige par USDT activo en Binance.
+- Filtro de liquidez mínima antes de descargar velas.
+- Evalúa Long y Short, Score mínimo y R/B >= 1:3.
+- Favoritos se conservan independientes del radar.

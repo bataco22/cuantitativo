@@ -1,5 +1,5 @@
-const CACHE='centro-quant-v6-7-3';
-const ASSETS=['./','./index.html','./styles.css?v=6.7.3','./app.js?v=6.7.3','./manifest.webmanifest'];
+const CACHE='centro-quant-v6-7-1';
+const ASSETS=['./','./index.html','./styles.css?v=6.7.1','./app.js?v=6.7.1','./manifest.webmanifest'];
 self.addEventListener('install',event=>{self.skipWaiting();event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)))});
 self.addEventListener('activate',event=>event.waitUntil(Promise.all([caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))),self.clients.claim()])));
 self.addEventListener('fetch',event=>{

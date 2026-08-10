@@ -706,71 +706,20 @@ function tradeCard(t){
   <div class="paper-snapshot"><span class="tag">Control ${checklistDone}/4</span><span class="tag">RSI ${fmt(t.snapshot.rsi,1)}</span><span class="tag">ADX ${fmt(t.snapshot.adx,1)}</span><span class="tag">ATR ${fmt(t.snapshot.atrPct,2)}%</span><span class="tag">Vol ${fmt(t.snapshot.volumeRatio,2)}x</span><span class="tag">${t.snapshot.trend}</span></div>
   ${t.notes?`<p class="paper-note">${t.notes.replace(/</g,"&lt;")}</p>`:""}<div class="paper-actions">${t.status==="open"?`<button class="ghost" data-close-paper="${t.id}">Cerrar manual</button>`:"<span></span>"}<button class="danger" data-delete-paper="${t.id}">Eliminar</button></div></article>`;
 }
-
-
 function renderPaperTrades(){
-  const openEl=$("#paperOpen"),closedEl=$("#paperClosed");
-  if(!openEl||!closedEl)return;
-
-  const openTrades=state.paperTrades.filter(t=>t.status==="open");
-  const closedTrades=state.paperTrades.filter(t=>t.status!=="open");
-  const frames=["15m","1h","4h","1d","1w"];
-  const frameLabel={"15m":"15 min","1h":"1 hora","4h":"4 horas","1d":"1 día","1w":"1 semana"};
-
-  const tradeCard=(t)=>`<div class="paper-trade-card">
-    <div class="paper-trade-main">
-      <div><strong>${t.symbol}/USDT</strong><small>${(t.side||"").toUpperCase()} · ${frameLabel[t.interval]||t.interval||"—"}</small></div>
-      <div class="paper-trade-score"><span>Score</span><strong>${t.score ?? "—"}</strong></div>
-    </div>
-    <div class="paper-trade-grid">
-      <div><span>Entrada</span><strong>${formatPrice(t.entry)}</strong></div>
-      <div><span>Stop</span><strong>${formatPrice(t.stop)}</strong></div>
-      <div><span>Objetivo</span><strong>${formatPrice(t.target)}</strong></div>
-      <div><span>Último</span><strong>${formatPrice(t.lastPrice ?? t.entry)}</strong></div>
-    </div>
-    ${t.status==="open" ? `<div class="paper-trade-actions"><button class="secondary small" onclick="closePaperTrade('${t.id}','manual')">Cerrar operación</button></div>` : ""}
-  </div>`;
-
-  const sideGroup=(rows,side)=>{
-    const filtered=rows.filter(t=>(t.side||"").toLowerCase()===side);
-    const label=side==="long"?"LONG":"SHORT";
-    return `<details class="paper-side-group" ${filtered.length ? "open" : ""}>
-      <summary>
-        <span class="paper-side-title ${side}">${label}</span>
-        <span class="paper-side-count">${filtered.length} ${filtered.length===1?"operación":"operaciones"}</span>
-      </summary>
-      <div class="paper-side-body">
-        ${filtered.length ? filtered.map(tradeCard).join("") : `<div class="paper-empty">No hay operaciones ${label} en esta temporalidad.</div>`}
-      </div>
-    </details>`;
-  };
-
-  const groups=frames.map(tf=>{
-    const rows=openTrades.filter(t=>(t.interval||"4h").toLowerCase()===tf);
-    return `<details class="paper-tf-group" ${rows.length ? "open" : ""}>
-      <summary>
-        <span class="paper-tf-title">${frameLabel[tf]}</span>
-        <span class="paper-tf-count">${rows.length} ${rows.length===1?"operación":"operaciones"}</span>
-      </summary>
-      <div class="paper-tf-body">
-        ${sideGroup(rows,"long")}
-        ${sideGroup(rows,"short")}
-      </div>
-    </details>`;
-  }).join("");
-
-  const others=openTrades.filter(t=>!frames.includes((t.interval||"").toLowerCase()));
-  const extra=others.length?`<details class="paper-tf-group" open>
-      <summary><span class="paper-tf-title">Otras temporalidades</span><span class="paper-tf-count">${others.length} operaciones</span></summary>
-      <div class="paper-tf-body">${sideGroup(others,"long")}${sideGroup(others,"short")}</div>
-    </details>`:"";
-
-  openEl.innerHTML=openTrades.length ? groups+extra : '<div class="paper-empty">No hay operaciones abiertas.</div>';
-
-  closedEl.innerHTML=closedTrades.length ? closedTrades.slice().reverse().map(t=>`<div class="paper-history-row">
-      <div><strong>${t.symbol}/USDT</strong><small>${(t.side||"").toUpperCase()} · ${frameLabel[t.interval]||t.interval||"—"}</small></div>
-      <div><span>${t.status==="won"?"Ganada":t.status==="lost"?"Perdida":"Cerrada"}</span><strong>${Number(t.pnlPct||0).toFixed(2)}%</strong></div>
-    </div>`).join("") : '<div class="paper-empty">Todavía no hay operaciones cerradas.</div>';
+  const openCountEl=$("#paperOpenCount"); if(openCountEl) openCountEl.textContent=state.paperTrades.filter(t=>t.status==="open").length;
+  if(!$("#paperOpenList"))return;
+  const open=state.paperTrades.filter(t=>t.status==="open"),closed=state.paperTrades.filter(t=>t.status!=="open");
+  const filter=$("#paperFilter")?.value||"all";
+  const visible=closed.filter(t=>filter==="all"||(filter==="wins"&&(t.resultPct||0)>0)||(filter==="losses"&&(t.resultPct||0)<0)||filter===t.side);
+  $("#paperOpenList").innerHTML=open.length?open.map(tradeCard).join(""):'<div class="notice">Todavía no hay operaciones simuladas abiertas.</div>';
+  $("#paperClosedList").innerHTML=visible.length?visible.map(tradeCard).join(""):'<div class="notice">No hay operaciones que coincidan con este filtro.</div>';
+  const wins=closed.filter(t=>t.status==="win"||t.resultPct>0).length,losses=closed.filter(t=>t.status==="loss"||t.resultPct<0).length,rate=closed.length?wins/closed.length*100:0,avg=closed.length?closed.reduce((s,t)=>s+(t.resultPct||0),0)/closed.length:0;
+  const totalPct=closed.reduce((s,t)=>s+(t.resultPct||0),0),avgRR=closed.length?closed.reduce((s,t)=>s+(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop)||0),0)/closed.length:0;
+  const totalCash=closed.reduce((s,t)=>s+((t.side==="long"?((t.exit||t.entry)-t.entry):(t.entry-(t.exit||t.entry)))*(t.qty||0)),0);
+  $("#paperStats").innerHTML=[["Pruebas cerradas",closed.length],["Ganadoras",wins],["Perdedoras",losses],["Acierto",fmt(rate,1)+"%"],["Resultado acumulado",(totalPct>=0?"+":"")+fmt(totalPct,2)+"%"],["Resultado en dinero",(totalCash>=0?"+":"")+money(totalCash)],["Resultado promedio",(avg>=0?"+":"")+fmt(avg,2)+"%"],["R/B promedio","1 : "+fmt(avgRR,2)]].map(([k,v])=>`<div class="result-card"><span>${k}</span><strong>${v}</strong></div>`).join("");
+  renderPaperInsights(closed);
+  $$('[data-close-paper]').forEach(b=>b.onclick=()=>closePaperManual(+b.dataset.closePaper));$$('[data-delete-paper]').forEach(b=>b.onclick=()=>deletePaper(+b.dataset.deletePaper));
 }
 
 

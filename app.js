@@ -285,8 +285,12 @@ function renderScannerResults(){
   }).join("");
 }
 
-async function scanAutoPaper(){
-  readAutoPaperControls(); const a=state.autoPaper;if(!a.enabled)return;
+async function scanAutoPaper(manual=false){
+  readAutoPaperControls(); const a=state.autoPaper;
+  if(!a.enabled&&!manual){
+    const status=$("#autoPaperStatus");if(status)status.textContent="Apagado";
+    return;
+  }
   const status=$("#autoPaperStatus");if(status)status.textContent="Preparando Top 100 y filtros…";
   let opened=0, universe=[];
   try{universe=await getScannerUniverse()}catch(e){console.warn("scanner universe",e);if(status)status.textContent="No se pudo cargar el universo de mercado";return}
@@ -297,6 +301,7 @@ async function scanAutoPaper(){
       const row={symbol:sym,longScore:analysis.longScore,shortScore:analysis.shortScore,price:analysis.price};
       const candidates=[{side:"long",score:analysis.longScore},{side:"short",score:analysis.shortScore}].filter(x=>x.score>=a.threshold).sort((x,y)=>y.score-x.score);
       if(!candidates.length)return row;
+      if(manual&&!a.enabled)return row;
       const pick=candidates[0],key=`${sym}:${a.interval}:${pick.side}`,signalId=signalCandle.t;
       const alreadyOpen=state.paperTrades.some(t=>t.status==="open"&&t.symbol===sym&&t.interval===a.interval&&t.side===pick.side&&t.auto);
       if(alreadyOpen||a.lastSignals[key]===signalId)return row;
@@ -310,7 +315,7 @@ async function scanAutoPaper(){
   state.scannerResults=scanRows.filter(Boolean).sort((x,y)=>Math.max(y.longScore,y.shortScore)-Math.max(x.longScore,x.shortScore));
   renderScannerResults();
   saveAutoPaper();savePaperState();renderPaperTrades();
-  if(status)status.textContent=`Activo · Top 100 → ${universe.length} aptas · ${a.interval} · score ≥ ${a.threshold}${opened?` · ${opened} nueva${opened===1?"":"s"}`:" · sin señales nuevas"}`;
+  if(status)status.textContent=`${a.enabled?"Activo":"Barrido manual"} · Top 100 → ${universe.length} aptas · ${a.interval} · score ≥ ${a.threshold}${opened?` · ${opened} nueva${opened===1?"":"s"}`:" · sin señales nuevas"}`;
 }
 
 function activeDecision(d,mode){return mode==="short"?d.shortDecision:d.longDecision}
@@ -706,22 +711,80 @@ function tradeCard(t){
   <div class="paper-snapshot"><span class="tag">Control ${checklistDone}/4</span><span class="tag">RSI ${fmt(t.snapshot.rsi,1)}</span><span class="tag">ADX ${fmt(t.snapshot.adx,1)}</span><span class="tag">ATR ${fmt(t.snapshot.atrPct,2)}%</span><span class="tag">Vol ${fmt(t.snapshot.volumeRatio,2)}x</span><span class="tag">${t.snapshot.trend}</span></div>
   ${t.notes?`<p class="paper-note">${t.notes.replace(/</g,"&lt;")}</p>`:""}<div class="paper-actions">${t.status==="open"?`<button class="ghost" data-close-paper="${t.id}">Cerrar manual</button>`:"<span></span>"}<button class="danger" data-delete-paper="${t.id}">Eliminar</button></div></article>`;
 }
+
+
 function renderPaperTrades(){
-  const openCountEl=$("#paperOpenCount"); if(openCountEl) openCountEl.textContent=state.paperTrades.filter(t=>t.status==="open").length;
-  if(!$("#paperOpenList"))return;
-  const open=state.paperTrades.filter(t=>t.status==="open"),closed=state.paperTrades.filter(t=>t.status!=="open");
+  const openCountEl=$("#paperOpenCount");
+  const openList=$("#paperOpenList"), closedList=$("#paperClosedList");
+  if(!openList||!closedList)return;
+
+  const open=state.paperTrades.filter(t=>t.status==="open");
+  const closed=state.paperTrades.filter(t=>t.status!=="open");
+  if(openCountEl) openCountEl.textContent=open.length;
+
+  const frames=["15m","1h","4h","1d","1w"];
+  const frameLabel={"15m":"15 min","1h":"1 hora","4h":"4 horas","1d":"1 día","1w":"1 semana"};
+
+  const sideGroup=(rows,side)=>{
+    const filtered=rows.filter(t=>(t.side||"").toLowerCase()===side);
+    const label=side==="long"?"LONG":"SHORT";
+    return `<details class="paper-side-group" ${filtered.length ? "open" : ""}>
+      <summary>
+        <span class="paper-side-title ${side}">${label}</span>
+        <span class="paper-side-count">${filtered.length} ${filtered.length===1?"operación":"operaciones"}</span>
+      </summary>
+      <div class="paper-side-body">
+        ${filtered.length ? filtered.map(tradeCard).join("") : `<div class="notice compact-notice">No hay operaciones ${label}.</div>`}
+      </div>
+    </details>`;
+  };
+
+  const timeframeGroup=(tf)=>{
+    const rows=open.filter(t=>(t.interval||"4h").toLowerCase()===tf);
+    return `<details class="paper-tf-group" ${rows.length ? "open" : ""}>
+      <summary class="paper-tf-summary">
+        <span class="paper-tf-title">${frameLabel[tf]}</span>
+        <span class="paper-tf-count">${rows.length} ${rows.length===1?"operación":"operaciones"}</span>
+      </summary>
+      <div class="paper-tf-body">
+        ${sideGroup(rows,"long")}
+        ${sideGroup(rows,"short")}
+      </div>
+    </details>`;
+  };
+
+  const standard=frames.map(timeframeGroup).join("");
+  const otherRows=open.filter(t=>!frames.includes((t.interval||"").toLowerCase()));
+  const other=otherRows.length?`<details class="paper-tf-group" open>
+    <summary class="paper-tf-summary"><span class="paper-tf-title">Otras temporalidades</span><span class="paper-tf-count">${otherRows.length} operaciones</span></summary>
+    <div class="paper-tf-body">${sideGroup(otherRows,"long")}${sideGroup(otherRows,"short")}</div>
+  </details>`:"";
+
+  openList.innerHTML=open.length ? standard+other : '<div class="notice">Todavía no hay operaciones simuladas abiertas.</div>';
+
   const filter=$("#paperFilter")?.value||"all";
   const visible=closed.filter(t=>filter==="all"||(filter==="wins"&&(t.resultPct||0)>0)||(filter==="losses"&&(t.resultPct||0)<0)||filter===t.side);
-  $("#paperOpenList").innerHTML=open.length?open.map(tradeCard).join(""):'<div class="notice">Todavía no hay operaciones simuladas abiertas.</div>';
-  $("#paperClosedList").innerHTML=visible.length?visible.map(tradeCard).join(""):'<div class="notice">No hay operaciones que coincidan con este filtro.</div>';
-  const wins=closed.filter(t=>t.status==="win"||t.resultPct>0).length,losses=closed.filter(t=>t.status==="loss"||t.resultPct<0).length,rate=closed.length?wins/closed.length*100:0,avg=closed.length?closed.reduce((s,t)=>s+(t.resultPct||0),0)/closed.length:0;
-  const totalPct=closed.reduce((s,t)=>s+(t.resultPct||0),0),avgRR=closed.length?closed.reduce((s,t)=>s+(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop)||0),0)/closed.length:0;
-  const totalCash=closed.reduce((s,t)=>s+((t.side==="long"?((t.exit||t.entry)-t.entry):(t.entry-(t.exit||t.entry)))*(t.qty||0)),0);
-  $("#paperStats").innerHTML=[["Pruebas cerradas",closed.length],["Ganadoras",wins],["Perdedoras",losses],["Acierto",fmt(rate,1)+"%"],["Resultado acumulado",(totalPct>=0?"+":"")+fmt(totalPct,2)+"%"],["Resultado en dinero",(totalCash>=0?"+":"")+money(totalCash)],["Resultado promedio",(avg>=0?"+":"")+fmt(avg,2)+"%"],["R/B promedio","1 : "+fmt(avgRR,2)]].map(([k,v])=>`<div class="result-card"><span>${k}</span><strong>${v}</strong></div>`).join("");
-  renderPaperInsights(closed);
-  $$('[data-close-paper]').forEach(b=>b.onclick=()=>closePaperManual(+b.dataset.closePaper));$$('[data-delete-paper]').forEach(b=>b.onclick=()=>deletePaper(+b.dataset.deletePaper));
-}
+  closedList.innerHTML=visible.length?visible.map(tradeCard).join(""):'<div class="notice">No hay operaciones que coincidan con este filtro.</div>';
 
+  const wins=closed.filter(t=>t.status==="win"||t.resultPct>0).length;
+  const losses=closed.filter(t=>t.status==="loss"||t.resultPct<0).length;
+  const rate=closed.length?wins/closed.length*100:0;
+  const avg=closed.length?closed.reduce((sum,t)=>sum+(t.resultPct||0),0)/closed.length:0;
+  const totalPct=closed.reduce((sum,t)=>sum+(t.resultPct||0),0);
+  const avgRR=closed.length?closed.reduce((sum,t)=>sum+(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop)||0),0)/closed.length:0;
+  const totalCash=closed.reduce((sum,t)=>sum+((t.side==="long"?((t.exit||t.entry)-t.entry):(t.entry-(t.exit||t.entry)))*(t.qty||0)),0);
+
+  $("#paperStats").innerHTML=[
+    ["Pruebas cerradas",closed.length],["Ganadoras",wins],["Perdedoras",losses],
+    ["Acierto",fmt(rate,1)+"%"],["Resultado acumulado",(totalPct>=0?"+":"")+fmt(totalPct,2)+"%"],
+    ["Resultado en dinero",(totalCash>=0?"+":"")+money(totalCash)],
+    ["Resultado promedio",(avg>=0?"+":"")+fmt(avg,2)+"%"],["R/B promedio","1 : "+fmt(avgRR,2)]
+  ].map(([k,v])=>`<div class="result-card"><span>${k}</span><strong>${v}</strong></div>`).join("");
+
+  renderPaperInsights(closed);
+  $$('[data-close-paper]').forEach(b=>b.onclick=()=>closePaperManual(+b.dataset.closePaper));
+  $$('[data-delete-paper]').forEach(b=>b.onclick=()=>deletePaper(+b.dataset.deletePaper));
+}
 
 function renderPaperInsights(closed){
   const box=$("#paperInsights");if(!box)return;
@@ -845,7 +908,7 @@ $("#savePaperBtn").onclick=()=>createPaperTrade().catch(e=>alert("No se pudo gua
 });
 $("#refreshPaperBtn").onclick=async()=>{await updatePaperTrades();await scanAutoPaper();};
 ["autoPaperEnabled","autoPaperInterval","autoPaperThreshold","autoPaperStop","autoPaperTarget","autoPaperRisk","autoPaperCapital"].forEach(id=>$("#"+id)?.addEventListener("change",()=>{readAutoPaperControls();if(state.autoPaper.enabled)scanAutoPaper();}));
-$("#scanAutoPaperBtn")?.addEventListener("click",scanAutoPaper);
+$("#scanAutoPaperBtn")?.addEventListener("click",()=>scanAutoPaper(true));
 $("#trafficNeedsBtn").onclick=()=>{const box=$("#trafficNeeds"),btn=$("#trafficNeedsBtn");const open=box.hidden;box.hidden=!open;btn.setAttribute("aria-expanded",open?"true":"false");btn.textContent=open?"Ocultar condiciones":"¿Qué tendría que pasar para ponerse en verde?";};
 $("#paperFilter").onchange=renderPaperTrades;
 $("#exportPaperBtn").onclick=exportPaperCSV;

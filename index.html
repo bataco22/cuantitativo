@@ -10,7 +10,7 @@
   <title>Centro de Trading Cuantitativo</title>
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
-  <link rel="stylesheet" href="./styles.css?v=6.6.0" />
+  <link rel="stylesheet" href="./styles.css?v=6.7.1" />
 </head>
 <body>
   <header class="app-header">
@@ -296,6 +296,11 @@
         <small class="muted">En iPhone una PWA no puede garantizar ejecución continua cuando está totalmente cerrada; el barrido se hace con la app abierta, al abrirla y al actualizar.</small>
       </div>
 
+      <div class="scanner-results-card">
+        <div class="scanner-results-head"><div><p class="eyebrow">Radar Top 100</p><h3>Último barrido del mercado</h3><p id="scannerResultsMeta">Aún no hay un barrido terminado.</p></div><div class="scanner-legend"><span class="dot signal"></span>85+ señal <span class="dot watch"></span>70–84 vigilar</div></div>
+        <div id="scannerResults" class="scanner-results"></div>
+        <small class="muted">Aquí aparecen las criptos que realmente logró analizar después de los filtros. Se ordenan por el mejor Score entre Long y Short.</small>
+      </div>
       <div class="paper-layout">
         <div class="form-card paper-entry-card">
           <div class="paper-card-title"><span class="step-number">1</span><div><strong>Nueva operación</strong><small>Define la idea antes de entrar</small></div></div>
@@ -434,6 +439,6 @@
     </form>
   </dialog>
 
-  <script src="./app.js?v=6.6.0"></script>
+  <script src="./app.js?v=6.7.1"></script>
 </body>
 </html>

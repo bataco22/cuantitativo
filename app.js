@@ -13,7 +13,8 @@ const state = {
   paperTrades: JSON.parse(localStorage.getItem("quant_paper_trades") || "[]"),
   pendingPaperSignal: null,
   homeInterval: localStorage.getItem("quant_home_timeframe") || "1d",
-  autoPaper: JSON.parse(localStorage.getItem("quant_auto_paper") || "null") || {enabled:false,interval:"4h",threshold:85,stopPct:3,targetPct:9,riskPct:1,capital:20000,lastSignals:{},universe:"top100",minQuoteVolume:5000000}
+  autoPaper: JSON.parse(localStorage.getItem("quant_auto_paper") || "null") || {enabled:false,interval:"4h",threshold:85,stopPct:3,targetPct:9,riskPct:1,capital:20000,lastSignals:{},universe:"top100",minQuoteVolume:5000000},
+  scannerResults: []
 };
 
 const $ = s => document.querySelector(s);
@@ -271,27 +272,43 @@ function readAutoPaperControls(){
     lastSignals:state.autoPaper.lastSignals||{}
   };saveAutoPaper();syncAutoPaperControls();
 }
+
+function renderScannerResults(){
+  const box=$("#scannerResults"), meta=$("#scannerResultsMeta"); if(!box)return;
+  const rows=state.scannerResults||[];
+  if(meta)meta.textContent=rows.length?`${rows.length} criptos revisadas · ordenadas por mejor Score`:"Aún no hay un barrido terminado.";
+  if(!rows.length){box.innerHTML='<div class="scanner-empty">Activa el radar y toca <strong>Revisar señales ahora</strong> para ver aquí todas las criptos analizadas.</div>';return;}
+  box.innerHTML=rows.map((r,i)=>{
+    const best=Math.max(r.longScore,r.shortScore),side=r.longScore>=r.shortScore?"LONG":"SHORT";
+    const cls=best>=85?"scanner-good":best>=70?"scanner-watch":"scanner-low",status=best>=85?"SEÑAL":best>=70?"VIGILAR":"SIN SEÑAL";
+    return `<div class="scanner-row ${cls}"><span class="scanner-rank">${i+1}</span><div class="scanner-coin"><strong>${r.symbol}/USDT</strong><small>${status} · mejor lado ${side}</small></div><div class="scanner-side"><span>Long</span><strong>${r.longScore}</strong></div><div class="scanner-side"><span>Short</span><strong>${r.shortScore}</strong></div><div class="scanner-best"><span>Mejor</span><strong>${best}</strong></div></div>`;
+  }).join("");
+}
+
 async function scanAutoPaper(){
   readAutoPaperControls(); const a=state.autoPaper;if(!a.enabled)return;
   const status=$("#autoPaperStatus");if(status)status.textContent="Preparando Top 100 y filtros…";
   let opened=0, universe=[];
   try{universe=await getScannerUniverse()}catch(e){console.warn("scanner universe",e);if(status)status.textContent="No se pudo cargar el universo de mercado";return}
   if(status)status.textContent=`Escaneando ${universe.length} criptos aptas del Top 100…`;
-  await mapWithConcurrency(universe,6,async sym=>{
+  const scanRows=await mapWithConcurrency(universe,6,async sym=>{
     try{
       const candles=await getCandles(sym,a.interval,a.interval==="1w"?260:500),analysis=analyze(candles),signalIndex=Math.max(1,candles.length-2),signalCandle=candles[signalIndex];
+      const row={symbol:sym,longScore:analysis.longScore,shortScore:analysis.shortScore,price:analysis.price};
       const candidates=[{side:"long",score:analysis.longScore},{side:"short",score:analysis.shortScore}].filter(x=>x.score>=a.threshold).sort((x,y)=>y.score-x.score);
-      if(!candidates.length)return;
+      if(!candidates.length)return row;
       const pick=candidates[0],key=`${sym}:${a.interval}:${pick.side}`,signalId=signalCandle.t;
       const alreadyOpen=state.paperTrades.some(t=>t.status==="open"&&t.symbol===sym&&t.interval===a.interval&&t.side===pick.side&&t.auto);
-      if(alreadyOpen||a.lastSignals[key]===signalId)return;
+      if(alreadyOpen||a.lastSignals[key]===signalId)return row;
       const entry=signalCandle.c,lv=paperLevels(entry,pick.side,"percent",a.stopPct,"percent",a.targetPct),riskDist=Math.abs(entry-lv.stop),rewardDist=Math.abs(lv.target-entry),rr=riskDist?rewardDist/riskDist:0;
-      if(rr<3)return;
+      if(rr<3)return row;
       const riskCash=a.capital*a.riskPct/100,qty=riskDist?riskCash/riskDist:0;
       state.paperTrades.unshift({id:Date.now()+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry,stop:lv.stop,target:lv.target,openedAt:signalCandle.t,status:"open",current:analysis.price,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*rewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:{longScore:analysis.longScore,shortScore:analysis.shortScore,rsi:analysis.rsi,adx:analysis.adx,atrPct:analysis.atrPct,volumeRatio:analysis.volumeRatio,trend:analysis.trend,ema20:analysis.e20.at(-1),ema50:analysis.e50.at(-1),ema200:analysis.e200.at(-1)},notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez`,auto:true,closedAt:null,exit:null,resultPct:null});
-      a.lastSignals[key]=signalId;opened++;
-    }catch(e){console.warn("auto paper",sym,e)}
+      a.lastSignals[key]=signalId;opened++; return row;
+    }catch(e){console.warn("auto paper",sym,e);return null}
   });
+  state.scannerResults=scanRows.filter(Boolean).sort((x,y)=>Math.max(y.longScore,y.shortScore)-Math.max(x.longScore,x.shortScore));
+  renderScannerResults();
   saveAutoPaper();savePaperState();renderPaperTrades();
   if(status)status.textContent=`Activo · Top 100 → ${universe.length} aptas · ${a.interval} · score ≥ ${a.threshold}${opened?` · ${opened} nueva${opened===1?"":"s"}`:" · sin señales nuevas"}`;
 }
@@ -833,5 +850,5 @@ $("#trafficNeedsBtn").onclick=()=>{const box=$("#trafficNeeds"),btn=$("#trafficN
 $("#paperFilter").onchange=renderPaperTrades;
 $("#exportPaperBtn").onclick=exportPaperCSV;
 
-renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();syncAutoPaperControls();if($("#homeTimeframeSelect"))$("#homeTimeframeSelect").value=state.homeInterval;renderHome();refreshAll().then(async()=>{await refreshHomeTimeframe(state.homeInterval);await updatePaperTrades();await scanAutoPaper();});
+renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();renderScannerResults();syncAutoPaperControls();if($("#homeTimeframeSelect"))$("#homeTimeframeSelect").value=state.homeInterval;renderHome();refreshAll().then(async()=>{await refreshHomeTimeframe(state.homeInterval);await updatePaperTrades();await scanAutoPaper();});
 if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(console.warn);

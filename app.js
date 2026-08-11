@@ -1,5 +1,5 @@
 
-// v6.8.0 · MFE y análisis de objetivos R
+// v6.8.1 · MFE, objetivos R y cierre automático de pruebas
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -721,7 +721,11 @@ async function backfillPaperMFE(){
   }
   if(missing.length) savePaperState();
 }
+let paperTradeUpdateRunning=false;
 async function updatePaperTrades(){
+  // Evita dos revisiones simultáneas (por temporizador, botón o regreso a la app).
+  if(paperTradeUpdateRunning) return;
+  paperTradeUpdateRunning=true;
   const open=state.paperTrades.filter(t=>t.status==="open");
   for(const t of open){
     try{
@@ -741,7 +745,27 @@ async function updatePaperTrades(){
     }catch(e){console.warn("paper",t.symbol,e)}
   }
   savePaperState();renderPaperTrades();
+  paperTradeUpdateRunning=false;
 }
+
+// Mientras la PWA esté activa, revisa stops/objetivos cada 45 s.
+// iOS puede suspender JavaScript en segundo plano; al volver a primer plano
+// hacemos una revisión inmediata y updatePaperTrades reconstruye lo ocurrido
+// usando las velas desde openedAt.
+const PAPER_TRADE_CHECK_MS=45*1000;
+setInterval(()=>{
+  if(document.visibilityState==="visible" && state.paperTrades.some(t=>t.status==="open")){
+    updatePaperTrades();
+  }
+},PAPER_TRADE_CHECK_MS);
+document.addEventListener("visibilitychange",()=>{
+  if(document.visibilityState==="visible" && state.paperTrades.some(t=>t.status==="open")){
+    updatePaperTrades();
+  }
+});
+window.addEventListener("focus",()=>{
+  if(state.paperTrades.some(t=>t.status==="open")) updatePaperTrades();
+});
 function closePaperManual(id){
   const t=state.paperTrades.find(x=>x.id===id);if(!t)return;
   const value=prompt("Precio de cierre manual",t.current||t.entry);if(value===null)return;

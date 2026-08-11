@@ -1,5 +1,5 @@
 
-// v6.7.6 · Force PWA cache refresh on new deployment
+// v6.8.0 · MFE y análisis de objetivos R
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -692,6 +692,35 @@ async function createPaperTrade(){
     notes:$("#paperNotes").value.trim(),closedAt:null,exit:null,resultPct:null});
   savePaperState();state.pendingPaperSignal=null;$("#paperNotes").value="";["checkTrend","checkSignal","checkRisk","checkNoImpulse"].forEach(id=>$("#"+id).checked=false);renderPaperTrades();alert("Prueba guardada. La app seguirá su resultado.");
 }
+function favorableRFromPrice(t,price){
+  const risk=Math.abs(t.entry-t.stop); if(!(risk>0&&price>0)) return 0;
+  const move=t.side==="long"?price-t.entry:t.entry-price;
+  return Math.max(0,move/risk);
+}
+function updateTradeMFE(t,candle){
+  const favorablePrice=t.side==="long"?candle.h:candle.l;
+  const r=favorableRFromPrice(t,favorablePrice);
+  if(r>(t.mfeR||0)){t.mfeR=r;t.mfePrice=favorablePrice;t.mfeAt=candle.t;}
+}
+async function backfillPaperMFE(){
+  const missing=state.paperTrades.filter(t=>t.status!=="open"&&t.closedAt&&!(t.mfeR>=0));
+  for(const t of missing){
+    try{
+      const raw=await api("/klines",{symbol:t.symbol+"USDT",interval:t.interval,startTime:t.openedAt,endTime:t.closedAt,limit:1000});
+      const candles=raw.map(x=>({t:+x[0],h:+x[2],l:+x[3]}));
+      t.mfeR=0;t.mfePrice=t.entry;
+      for(const c of candles){
+        // En la vela del stop no conocemos el orden intravela. No contamos su extremo favorable
+        // si el stop fue tocado, para no inflar artificialmente el MFE histórico.
+        const stopHit=t.side==="long"?c.l<=t.stop:c.h>=t.stop;
+        if(stopHit && t.status==="loss") break;
+        updateTradeMFE(t,c);
+        if(c.t>=t.closedAt) break;
+      }
+    }catch(e){console.warn("mfe backfill",t.symbol,e)}
+  }
+  if(missing.length) savePaperState();
+}
 async function updatePaperTrades(){
   const open=state.paperTrades.filter(t=>t.status==="open");
   for(const t of open){
@@ -703,9 +732,10 @@ async function updatePaperTrades(){
       for(const c of candles){
         const stopHit=t.side==="long"?c.l<=t.stop:c.h>=t.stop;
         const targetHit=t.side==="long"?c.h>=t.target:c.l<=t.target;
+        if(!stopHit) updateTradeMFE(t,c);
         if(stopHit&&targetHit){t.status="loss";t.exit=t.stop;t.closedAt=c.t;break}
         if(stopHit){t.status="loss";t.exit=t.stop;t.closedAt=c.t;break}
-        if(targetHit){t.status="win";t.exit=t.target;t.closedAt=c.t;break}
+        if(targetHit){updateTradeMFE(t,c);t.status="win";t.exit=t.target;t.closedAt=c.t;break}
       }
       if(t.status!=="open") t.resultPct=(t.side==="long"?(t.exit/t.entry-1):(t.entry/t.exit-1))*100;
     }catch(e){console.warn("paper",t.symbol,e)}
@@ -727,7 +757,7 @@ function tradeCard(t){
   const pnlCash=(t.side==="long"?(current-t.entry):(t.entry-current))*(t.qty||0);
   const checklistDone=t.checklist?Object.values(t.checklist).filter(Boolean).length:0;
   return `<article class="paper-trade"><div class="paper-head"><div><h3>${t.symbol}/USDT · ${t.side.toUpperCase()}</h3><div class="paper-meta">${t.interval} · ${new Date(t.openedAt).toLocaleString("es-MX")}</div></div><strong class="${cls}">${status}</strong></div>
-  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
+  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Máx. avance (MFE)</span><strong>${t.mfeR>=0?"+"+fmt(t.mfeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
   <div class="paper-snapshot"><span class="tag">Control ${checklistDone}/4</span><span class="tag">RSI ${fmt(t.snapshot.rsi,1)}</span><span class="tag">ADX ${fmt(t.snapshot.adx,1)}</span><span class="tag">ATR ${fmt(t.snapshot.atrPct,2)}%</span><span class="tag">Vol ${fmt(t.snapshot.volumeRatio,2)}x</span><span class="tag">${t.snapshot.trend}</span></div>
   ${t.notes?`<p class="paper-note">${t.notes.replace(/</g,"&lt;")}</p>`:""}<div class="paper-actions">${t.status==="open"?`<button class="ghost" data-close-paper="${t.id}">Cerrar manual</button>`:"<span></span>"}<button class="danger" data-delete-paper="${t.id}">Eliminar</button></div></article>`;
 }
@@ -820,6 +850,16 @@ function renderPaperTrades(){
     ["Resultado en dinero",(totalCash>=0?"+":"")+money(totalCash)],
     ["Resultado promedio",(avg>=0?"+":"")+fmt(avg,2)+"%"],["R/B promedio","1 : "+fmt(avgRR,2)]
   ].map(([k,v])=>`<div class="result-card"><span>${k}</span><strong>${v}</strong></div>`).join("");
+
+  const mfeKnown=closed.filter(t=>t.mfeR>=0);
+  const rLevels=[1,1.5,2,2.5,3];
+  const objectiveCards=rLevels.map(r=>{
+    const hits=mfeKnown.filter(t=>t.mfeR>=r).length;
+    const pct=mfeKnown.length?hits/mfeKnown.length*100:0;
+    return `<div class="result-card mfe-card"><span>Habrían llegado a 1:${r}</span><strong>${hits}/${mfeKnown.length} · ${fmt(pct,1)}%</strong></div>`;
+  }).join("");
+  const mfeBox=$("#paperMfeStats");
+  if(mfeBox) mfeBox.innerHTML=objectiveCards+(mfeKnown.length<closed.length?`<p class="mfe-note">Calculando recorrido de ${closed.length-mfeKnown.length} operaciones anteriores…</p>`:``);
 
   renderPaperInsights(closed);
   $$('[data-close-paper]').forEach(b=>b.onclick=()=>closePaperManual(+b.dataset.closePaper));
@@ -946,12 +986,12 @@ $("#savePaperBtn").onclick=()=>createPaperTrade().catch(e=>alert("No se pudo gua
   $("#"+id)?.addEventListener("change",previewPaper);
   $("#"+id)?.addEventListener("input",previewPaper);
 });
-$("#refreshPaperBtn").onclick=async()=>{await updatePaperTrades();await scanAutoPaper();};
+$("#refreshPaperBtn").onclick=async()=>{await updatePaperTrades();await backfillPaperMFE();renderPaperTrades();await scanAutoPaper();};
 ["autoPaperEnabled","autoPaperInterval","autoPaperThreshold","autoPaperStop","autoPaperTarget","autoPaperRisk","autoPaperCapital"].forEach(id=>$("#"+id)?.addEventListener("change",()=>{readAutoPaperControls();if(state.autoPaper.enabled)scanAutoPaper();}));
 $("#scanAutoPaperBtn")?.addEventListener("click",()=>scanAutoPaper(true));
 $("#trafficNeedsBtn").onclick=()=>{const box=$("#trafficNeeds"),btn=$("#trafficNeedsBtn");const open=box.hidden;box.hidden=!open;btn.setAttribute("aria-expanded",open?"true":"false");btn.textContent=open?"Ocultar condiciones":"¿Qué tendría que pasar para ponerse en verde?";};
 $("#paperFilter").onchange=renderPaperTrades;
 $("#exportPaperBtn").onclick=exportPaperCSV;
 
-renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();renderScannerResults();syncAutoPaperControls();if($("#homeTimeframeSelect"))$("#homeTimeframeSelect").value=state.homeInterval;renderHome();refreshAll().then(async()=>{await refreshHomeTimeframe(state.homeInterval);await updatePaperTrades();await scanAutoPaper();});
+renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();renderScannerResults();syncAutoPaperControls();if($("#homeTimeframeSelect"))$("#homeTimeframeSelect").value=state.homeInterval;renderHome();refreshAll().then(async()=>{await refreshHomeTimeframe(state.homeInterval);await updatePaperTrades();await backfillPaperMFE();renderPaperTrades();await scanAutoPaper();});
 if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(console.warn);

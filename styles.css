@@ -224,3 +224,6 @@ textarea{width:100%;margin-top:6px;background:#0a1626;color:var(--text);border:1
 .paper-closed-title.other{color:var(--muted)}
 .paper-closed-count{margin-left:auto;margin-right:8px;font-size:.68rem;color:var(--muted);padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.05)}
 .paper-closed-body{display:grid;gap:8px;padding:0 8px 8px}
+
+/* v6.8.0 · MFE / objetivos R */
+.mfe-head{margin-top:18px}.mfe-head h3{margin:0 0 4px}.mfe-head p{margin:0;color:var(--muted);font-size:13px}.mfe-card strong{font-size:20px}.mfe-note{grid-column:1/-1;color:var(--muted);font-size:12px;margin:4px 0 0}

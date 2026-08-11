@@ -1,4 +1,24 @@
 
+// v6.7.6 · Force PWA cache refresh on new deployment
+(function(){
+  if(!("serviceWorker" in navigator)) return;
+  let refreshing=false;
+  navigator.serviceWorker.addEventListener("controllerchange",()=>{
+    if(refreshing) return;
+    refreshing=true;
+    location.reload();
+  });
+  window.addEventListener("load", async ()=>{
+    try{
+      const regs=await navigator.serviceWorker.getRegistrations();
+      for(const reg of regs){
+        try{ await reg.update(); }catch(e){}
+      }
+    }catch(e){}
+  });
+})();
+
+
 const API_BASE = "https://data-api.binance.vision/api/v3";
 const COINGECKO_MARKETS = "https://api.coingecko.com/api/v3/coins/markets";
 const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS","PYUSD","USD1","BUSD","FRAX","LUSD","GUSD","USDP","EURC","EURI"]);
@@ -741,7 +761,7 @@ function renderPaperTrades(){
 
   const timeframeGroup=(tf)=>{
     const rows=open.filter(t=>(t.interval||"4h").toLowerCase()===tf);
-    return `<details class="paper-tf-group" ${rows.length ? "open" : ""}>
+    return `<details class="paper-tf-group">
       <summary class="paper-tf-summary">
         <span class="paper-tf-title">${frameLabel[tf]}</span>
         <span class="paper-tf-count">${rows.length} ${rows.length===1?"operación":"operaciones"}</span>
@@ -755,12 +775,15 @@ function renderPaperTrades(){
 
   const standard=frames.map(timeframeGroup).join("");
   const otherRows=open.filter(t=>!frames.includes((t.interval||"").toLowerCase()));
-  const other=otherRows.length?`<details class="paper-tf-group" open>
-    <summary class="paper-tf-summary"><span class="paper-tf-title">Otras temporalidades</span><span class="paper-tf-count">${otherRows.length} operaciones</span></summary>
+  const other=otherRows.length?`<details class="paper-tf-group">
+    <summary class="paper-tf-summary">
+      <span class="paper-tf-title">Otras temporalidades</span>
+      <span class="paper-tf-count">${otherRows.length} operaciones</span>
+    </summary>
     <div class="paper-tf-body">${sideGroup(otherRows,"long")}${sideGroup(otherRows,"short")}</div>
   </details>`:"";
 
-  openList.innerHTML=open.length ? standard+other : '<div class="notice">Todavía no hay operaciones simuladas abiertas.</div>';
+  openList.innerHTML=standard+other;
 
   const filter=$("#paperFilter")?.value||"all";
   const visible=closed.filter(t=>filter==="all"||(filter==="wins"&&(t.resultPct||0)>0)||(filter==="losses"&&(t.resultPct||0)<0)||filter===t.side);

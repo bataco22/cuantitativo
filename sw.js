@@ -1,10 +1,68 @@
-const CACHE='centro-quant-v6-7-4';
-const ASSETS=['./','./index.html','./styles.css?v=6.7.4','./app.js?v=6.7.4','./manifest.webmanifest'];
-self.addEventListener('install',event=>{self.skipWaiting();event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)))});
-self.addEventListener('activate',event=>event.waitUntil(Promise.all([caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))),self.clients.claim()])));
-self.addEventListener('fetch',event=>{
-  if(event.request.mode==='navigate'){
-    event.respondWith(fetch(event.request).then(response=>{const copy=response.clone();caches.open(CACHE).then(c=>c.put('./index.html',copy));return response}).catch(()=>caches.match('./index.html')));return;
+const CACHE_NAME="centro-quant-v6-7-6";
+const CORE=[
+  "./",
+  "./index.html",
+  "./styles.css?v=6.7.6",
+  "./app.js?v=6.7.6",
+  "./manifest.json"
+];
+
+self.addEventListener("install",event=>{
+  self.skipWaiting();
+  event.waitUntil(
+    caches.open(CACHE_NAME).then(cache=>cache.addAll(CORE)).catch(()=>{})
+  );
+});
+
+self.addEventListener("activate",event=>{
+  event.waitUntil((async()=>{
+    const keys=await caches.keys();
+    await Promise.all(keys.filter(k=>k!==CACHE_NAME).map(k=>caches.delete(k)));
+    await self.clients.claim();
+  })());
+});
+
+self.addEventListener("fetch",event=>{
+  const req=event.request;
+  if(req.method!=="GET") return;
+
+  const url=new URL(req.url);
+  const isSameOrigin=url.origin===self.location.origin;
+  const isAppAsset=isSameOrigin && (
+    url.pathname.endsWith("/") ||
+    url.pathname.endsWith("/index.html") ||
+    url.pathname.endsWith("/app.js") ||
+    url.pathname.endsWith("/styles.css")
+  );
+
+  if(isAppAsset){
+    event.respondWith((async()=>{
+      try{
+        const fresh=await fetch(req,{cache:"no-store"});
+        const cache=await caches.open(CACHE_NAME);
+        cache.put(req,fresh.clone());
+        return fresh;
+      }catch(e){
+        const cached=await caches.match(req);
+        if(cached) return cached;
+        throw e;
+      }
+    })());
+    return;
   }
-  event.respondWith(caches.match(event.request).then(cached=>cached||fetch(event.request).then(response=>{if(event.request.method==='GET'&&response.ok){const copy=response.clone();caches.open(CACHE).then(c=>c.put(event.request,copy))}return response})));
+
+  event.respondWith((async()=>{
+    const cached=await caches.match(req);
+    if(cached) return cached;
+    try{
+      const fresh=await fetch(req);
+      if(isSameOrigin){
+        const cache=await caches.open(CACHE_NAME);
+        cache.put(req,fresh.clone());
+      }
+      return fresh;
+    }catch(e){
+      return cached || Response.error();
+    }
+  })());
 });

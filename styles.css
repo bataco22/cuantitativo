@@ -211,3 +211,16 @@ textarea{width:100%;margin-top:6px;background:#0a1626;color:var(--text);border:1
 .compact-notice{padding:9px 10px;margin:0}
 
 /* v6.7.6 cache refresh */
+
+/* v6.7.7 · Posiciones cerradas agrupadas por resultado */
+.paper-closed-group{margin:0 0 10px;border:1px solid rgba(255,255,255,.09);border-radius:14px;background:rgba(255,255,255,.025);overflow:hidden}
+.paper-closed-group summary{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 13px;cursor:pointer;list-style:none}
+.paper-closed-group summary::-webkit-details-marker{display:none}
+.paper-closed-group summary::after{content:"⌄";font-size:.95rem;color:var(--muted);transition:transform .18s ease}
+.paper-closed-group[open]>summary::after{transform:rotate(180deg)}
+.paper-closed-title{font-size:.78rem;font-weight:900;letter-spacing:.05em}
+.paper-closed-title.won{color:var(--accent)}
+.paper-closed-title.lost{color:var(--danger)}
+.paper-closed-title.other{color:var(--muted)}
+.paper-closed-count{margin-left:auto;margin-right:8px;font-size:.68rem;color:var(--muted);padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.05)}
+.paper-closed-body{display:grid;gap:8px;padding:0 8px 8px}

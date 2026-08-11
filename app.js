@@ -787,7 +787,24 @@ function renderPaperTrades(){
 
   const filter=$("#paperFilter")?.value||"all";
   const visible=closed.filter(t=>filter==="all"||(filter==="wins"&&(t.resultPct||0)>0)||(filter==="losses"&&(t.resultPct||0)<0)||filter===t.side);
-  closedList.innerHTML=visible.length?visible.map(tradeCard).join(""):'<div class="notice">No hay operaciones que coincidan con este filtro.</div>';
+
+  const won=visible.filter(t=>t.status==="win"||(t.resultPct||0)>0);
+  const lost=visible.filter(t=>t.status==="loss"||(t.resultPct||0)<0);
+  const neutral=visible.filter(t=>!won.includes(t)&&!lost.includes(t));
+
+  const closedGroup=(label,rows,kind)=>`<details class="paper-closed-group">
+    <summary>
+      <span class="paper-closed-title ${kind}">${label}</span>
+      <span class="paper-closed-count">${rows.length} ${rows.length===1?"operación":"operaciones"}</span>
+    </summary>
+    <div class="paper-closed-body">
+      ${rows.length?rows.slice().reverse().map(tradeCard).join(""):`<div class="notice compact-notice">No hay operaciones ${label.toLowerCase()}.</div>`}
+    </div>
+  </details>`;
+
+  closedList.innerHTML=visible.length
+    ? closedGroup("GANADAS",won,"won")+closedGroup("PERDIDAS",lost,"lost")+(neutral.length?closedGroup("OTRAS",neutral,"other"):"")
+    : '<div class="notice">No hay operaciones que coincidan con este filtro.</div>';
 
   const wins=closed.filter(t=>t.status==="win"||t.resultPct>0).length;
   const losses=closed.filter(t=>t.status==="loss"||t.resultPct<0).length;

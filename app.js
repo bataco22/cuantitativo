@@ -1,5 +1,5 @@
 
-// v6.8.1 · MFE, objetivos R y cierre automático de pruebas
+// v6.8.2 · MFE, objetivos R y seguimiento paralelo de cierres
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -722,30 +722,48 @@ async function backfillPaperMFE(){
   if(missing.length) savePaperState();
 }
 let paperTradeUpdateRunning=false;
+const PAPER_TRADE_CONCURRENCY=6;
+
+async function checkOnePaperTrade(t){
+  try{
+    const raw=await api("/klines",{symbol:t.symbol+"USDT",interval:t.interval,startTime:t.openedAt,limit:1000});
+    const candles=raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5]}));
+    if(!candles.length) return;
+    t.current=candles.at(-1).c;
+    for(const c of candles){
+      const stopHit=t.side==="long"?c.l<=t.stop:c.h>=t.stop;
+      const targetHit=t.side==="long"?c.h>=t.target:c.l<=t.target;
+      if(!stopHit) updateTradeMFE(t,c);
+      // Si stop y objetivo aparecen en la misma vela no conocemos el orden intravela:
+      // mantenemos el criterio conservador de la versión anterior y contamos stop.
+      if(stopHit&&targetHit){t.status="loss";t.exit=t.stop;t.closedAt=c.t;break}
+      if(stopHit){t.status="loss";t.exit=t.stop;t.closedAt=c.t;break}
+      if(targetHit){updateTradeMFE(t,c);t.status="win";t.exit=t.target;t.closedAt=c.t;break}
+    }
+    if(t.status!=="open") t.resultPct=(t.side==="long"?(t.exit/t.entry-1):(t.entry/t.exit-1))*100;
+  }catch(e){
+    console.warn("paper",t.symbol,e);
+  }
+}
+
 async function updatePaperTrades(){
-  // Evita dos revisiones simultáneas (por temporizador, botón o regreso a la app).
+  // Evita dos rondas simultáneas. El finally garantiza liberar el bloqueo aun si algo falla.
   if(paperTradeUpdateRunning) return;
   paperTradeUpdateRunning=true;
-  const open=state.paperTrades.filter(t=>t.status==="open");
-  for(const t of open){
-    try{
-      const raw=await api("/klines",{symbol:t.symbol+"USDT",interval:t.interval,startTime:t.openedAt,limit:1000});
-      const candles=raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5]}));
-      if(!candles.length) continue;
-      t.current=candles.at(-1).c;
-      for(const c of candles){
-        const stopHit=t.side==="long"?c.l<=t.stop:c.h>=t.stop;
-        const targetHit=t.side==="long"?c.h>=t.target:c.l<=t.target;
-        if(!stopHit) updateTradeMFE(t,c);
-        if(stopHit&&targetHit){t.status="loss";t.exit=t.stop;t.closedAt=c.t;break}
-        if(stopHit){t.status="loss";t.exit=t.stop;t.closedAt=c.t;break}
-        if(targetHit){updateTradeMFE(t,c);t.status="win";t.exit=t.target;t.closedAt=c.t;break}
-      }
-      if(t.status!=="open") t.resultPct=(t.side==="long"?(t.exit/t.entry-1):(t.entry/t.exit-1))*100;
-    }catch(e){console.warn("paper",t.symbol,e)}
+  try{
+    const open=state.paperTrades.filter(t=>t.status==="open");
+    // Procesa hasta 6 posiciones a la vez para que una operación lenta no retrase a todas.
+    for(let i=0;i<open.length;i+=PAPER_TRADE_CONCURRENCY){
+      const batch=open.slice(i,i+PAPER_TRADE_CONCURRENCY);
+      await Promise.allSettled(batch.map(checkOnePaperTrade));
+    }
+    savePaperState();
+    renderPaperTrades();
+  }catch(e){
+    console.warn("paper update round",e);
+  }finally{
+    paperTradeUpdateRunning=false;
   }
-  savePaperState();renderPaperTrades();
-  paperTradeUpdateRunning=false;
 }
 
 // Mientras la PWA esté activa, revisa stops/objetivos cada 45 s.

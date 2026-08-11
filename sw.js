@@ -1,10 +1,10 @@
-const CACHE_NAME="centro-quant-v6-8-1";
+const CACHE_NAME="centro-quant-v6-8-2";
 const CORE=[
   "./",
   "./index.html",
-  "./styles.css?v=6.8.1",
-  "./app.js?v=6.8.1",
-  "./manifest.json"
+  "./styles.css?v=6.8.2",
+  "./app.js?v=6.8.2",
+  "./manifest.webmanifest"
 ];
 
 self.addEventListener("install",event=>{

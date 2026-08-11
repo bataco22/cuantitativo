@@ -10,7 +10,7 @@
   <title>Centro de Trading Cuantitativo</title>
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
-  <link rel="stylesheet" href="./styles.css?v=6.8.2" />
+  <link rel="stylesheet" href="./styles.css?v=6.8.3" />
 </head>
 <body>
   <header class="app-header">
@@ -337,7 +337,8 @@
         </aside>
       </div>
 
-      <div class="section-title paper-section-head"><div><p class="eyebrow">Seguimiento</p><h2>Operaciones abiertas</h2><p>Se actualizan al abrir la app o al pulsar Revisar.</p></div></div>
+      <div class="section-title paper-section-head"><div><p class="eyebrow">Seguimiento</p><h2>Operaciones abiertas</h2><p>La app revisa stops y objetivos automáticamente cada 45 segundos mientras está activa.</p></div></div>
+      <div id="paperMonitor" class="paper-monitor"></div>
       <div id="paperOpenList" class="paper-list"></div>
 
       <div class="section-title paper-section-head"><div><p class="eyebrow">Estadísticas</p><h2>Diario de resultados</h2><p>Historial, rendimiento acumulado y patrones de tu sistema.</p></div></div>
@@ -441,8 +442,8 @@
     </form>
   </dialog>
 
-  <script src="./app.js?v=6.8.2"></script>
+  <script src="./app.js?v=6.8.3"></script>
 
-<div id="appVersionBadge" style="position:fixed;right:8px;bottom:8px;z-index:9999;font-size:10px;opacity:.45;pointer-events:none">v6.8.2</div>
+<div id="appVersionBadge" style="position:fixed;right:8px;bottom:8px;z-index:9999;font-size:10px;opacity:.45;pointer-events:none">v6.8.3</div>
 </body>
 </html>

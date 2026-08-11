@@ -1,5 +1,5 @@
 
-// v6.8.2 · MFE, objetivos R y seguimiento paralelo de cierres
+// v6.8.3 · diagnóstico visible del seguimiento automático
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -723,12 +723,29 @@ async function backfillPaperMFE(){
 }
 let paperTradeUpdateRunning=false;
 const PAPER_TRADE_CONCURRENCY=6;
+const paperMonitor={lastRun:null,lastDuration:0,checked:0,closed:0,errors:0,totalOpen:0,lastError:"",nextRun:null};
+
+function renderPaperMonitor(){
+  const box=$("#paperMonitor"); if(!box) return;
+  const active=state.paperTrades.some(t=>t.status==="open");
+  const now=Date.now();
+  const next=paperMonitor.nextRun?Math.max(0,Math.ceil((paperMonitor.nextRun-now)/1000)):null;
+  const stamp=paperMonitor.lastRun?new Date(paperMonitor.lastRun).toLocaleTimeString("es-MX",{hour:"2-digit",minute:"2-digit",second:"2-digit"}):"Aún no revisa";
+  let stateClass="ok", stateLabel=paperTradeUpdateRunning?"Revisando…":active?"Seguimiento automático activo":"Sin posiciones abiertas";
+  if(paperMonitor.errors>0){stateClass="warn";stateLabel="Seguimiento con errores"}
+  box.className=`paper-monitor ${stateClass}`;
+  box.innerHTML=`<div class="paper-monitor-head"><div><span class="monitor-dot"></span><strong>${stateLabel}</strong></div><button id="paperCheckNowBtn" class="secondary compact-btn" ${paperTradeUpdateRunning?"disabled":""}>Revisar ahora</button></div>
+  <div class="paper-monitor-grid"><span>Última revisión<strong>${stamp}</strong></span><span>Abiertas al iniciar<strong>${paperMonitor.totalOpen}</strong></span><span>Revisadas<strong>${paperMonitor.checked}</strong></span><span>Cerradas<strong>${paperMonitor.closed}</strong></span><span>Errores<strong>${paperMonitor.errors}</strong></span><span>Próxima revisión<strong>${active?(paperTradeUpdateRunning?"al terminar":next===null?"~45 s":`~${next} s`):"—"}</strong></span></div>
+  ${paperMonitor.lastError?`<div class="paper-monitor-error">Último error: ${String(paperMonitor.lastError).replace(/</g,"&lt;")}</div>`:""}`;
+  const btn=$("#paperCheckNowBtn"); if(btn) btn.onclick=()=>updatePaperTrades(true);
+}
 
 async function checkOnePaperTrade(t){
+  const before=t.status;
   try{
     const raw=await api("/klines",{symbol:t.symbol+"USDT",interval:t.interval,startTime:t.openedAt,limit:1000});
     const candles=raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5]}));
-    if(!candles.length) return;
+    if(!candles.length) return {ok:false,closed:false,error:"Sin velas devueltas"};
     t.current=candles.at(-1).c;
     for(const c of candles){
       const stopHit=t.side==="long"?c.l<=t.stop:c.h>=t.stop;
@@ -741,28 +758,44 @@ async function checkOnePaperTrade(t){
       if(targetHit){updateTradeMFE(t,c);t.status="win";t.exit=t.target;t.closedAt=c.t;break}
     }
     if(t.status!=="open") t.resultPct=(t.side==="long"?(t.exit/t.entry-1):(t.entry/t.exit-1))*100;
+    return {ok:true,closed:before==="open"&&t.status!=="open"};
   }catch(e){
     console.warn("paper",t.symbol,e);
+    return {ok:false,closed:false,error:`${t.symbol}: ${e?.message||e}`};
   }
 }
 
-async function updatePaperTrades(){
+async function updatePaperTrades(manual=false){
   // Evita dos rondas simultáneas. El finally garantiza liberar el bloqueo aun si algo falla.
-  if(paperTradeUpdateRunning) return;
+  if(paperTradeUpdateRunning){renderPaperMonitor();return}
   paperTradeUpdateRunning=true;
+  const started=Date.now();
+  paperMonitor.lastError="";
+  renderPaperMonitor();
   try{
     const open=state.paperTrades.filter(t=>t.status==="open");
+    paperMonitor.totalOpen=open.length; paperMonitor.checked=0; paperMonitor.closed=0; paperMonitor.errors=0;
     // Procesa hasta 6 posiciones a la vez para que una operación lenta no retrase a todas.
     for(let i=0;i<open.length;i+=PAPER_TRADE_CONCURRENCY){
       const batch=open.slice(i,i+PAPER_TRADE_CONCURRENCY);
-      await Promise.allSettled(batch.map(checkOnePaperTrade));
+      const results=await Promise.all(batch.map(checkOnePaperTrade));
+      for(const r of results){
+        if(r?.ok) paperMonitor.checked++;
+        else {paperMonitor.errors++; if(r?.error) paperMonitor.lastError=r.error}
+        if(r?.closed) paperMonitor.closed++;
+      }
+      renderPaperMonitor();
     }
     savePaperState();
     renderPaperTrades();
   }catch(e){
     console.warn("paper update round",e);
+    paperMonitor.errors++; paperMonitor.lastError=e?.message||String(e);
   }finally{
+    paperMonitor.lastRun=Date.now(); paperMonitor.lastDuration=paperMonitor.lastRun-started;
+    paperMonitor.nextRun=paperMonitor.lastRun+PAPER_TRADE_CHECK_MS;
     paperTradeUpdateRunning=false;
+    renderPaperMonitor();
   }
 }
 
@@ -771,6 +804,8 @@ async function updatePaperTrades(){
 // hacemos una revisión inmediata y updatePaperTrades reconstruye lo ocurrido
 // usando las velas desde openedAt.
 const PAPER_TRADE_CHECK_MS=45*1000;
+paperMonitor.nextRun=Date.now()+PAPER_TRADE_CHECK_MS;
+setInterval(renderPaperMonitor,1000);
 setInterval(()=>{
   if(document.visibilityState==="visible" && state.paperTrades.some(t=>t.status==="open")){
     updatePaperTrades();
@@ -1035,5 +1070,5 @@ $("#trafficNeedsBtn").onclick=()=>{const box=$("#trafficNeeds"),btn=$("#trafficN
 $("#paperFilter").onchange=renderPaperTrades;
 $("#exportPaperBtn").onclick=exportPaperCSV;
 
-renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();renderScannerResults();syncAutoPaperControls();if($("#homeTimeframeSelect"))$("#homeTimeframeSelect").value=state.homeInterval;renderHome();refreshAll().then(async()=>{await refreshHomeTimeframe(state.homeInterval);await updatePaperTrades();await backfillPaperMFE();renderPaperTrades();await scanAutoPaper();});
+renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();renderPaperMonitor();renderScannerResults();syncAutoPaperControls();if($("#homeTimeframeSelect"))$("#homeTimeframeSelect").value=state.homeInterval;renderHome();refreshAll().then(async()=>{await refreshHomeTimeframe(state.homeInterval);await updatePaperTrades();await backfillPaperMFE();renderPaperTrades();await scanAutoPaper();});
 if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(console.warn);

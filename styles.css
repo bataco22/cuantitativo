@@ -227,3 +227,13 @@ textarea{width:100%;margin-top:6px;background:#0a1626;color:var(--text);border:1
 
 /* v6.8.1 · MFE / objetivos R / cierre automático */
 .mfe-head{margin-top:18px}.mfe-head h3{margin:0 0 4px}.mfe-head p{margin:0;color:var(--muted);font-size:13px}.mfe-card strong{font-size:20px}.mfe-note{grid-column:1/-1;color:var(--muted);font-size:12px;margin:4px 0 0}
+
+
+/* v6.8.3 · monitor visible del motor de cierres */
+.paper-monitor{margin:0 0 14px;padding:13px;border-radius:15px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03)}
+.paper-monitor.ok{border-color:rgba(85,216,174,.25)}.paper-monitor.warn{border-color:rgba(255,184,77,.35)}
+.paper-monitor-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px}.paper-monitor-head>div{display:flex;align-items:center;gap:8px}.paper-monitor-head strong{font-size:.83rem}
+.monitor-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px rgba(85,216,174,.10)}.paper-monitor.warn .monitor-dot{background:var(--warn);box-shadow:0 0 0 4px rgba(255,184,77,.10)}
+.paper-monitor-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.paper-monitor-grid span{display:block;padding:8px 9px;border-radius:10px;background:rgba(255,255,255,.035);font-size:.61rem;color:var(--muted)}.paper-monitor-grid strong{display:block;margin-top:3px;font-size:.78rem;color:var(--text)}
+.paper-monitor-error{margin-top:9px;padding:8px 9px;border-radius:10px;background:rgba(255,184,77,.08);font-size:.67rem;color:var(--warn);word-break:break-word}.compact-btn{padding:7px 10px;font-size:.7rem}
+@media(max-width:560px){.paper-monitor-grid{grid-template-columns:repeat(2,1fr)}.paper-monitor-head{align-items:flex-start}.paper-monitor-head strong{font-size:.76rem}}

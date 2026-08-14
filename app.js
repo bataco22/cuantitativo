@@ -1,5 +1,5 @@
 
-// v6.8.3 · diagnóstico visible del seguimiento automático
+// v6.8.4 · correcciones de medición, monitor incremental y conexión
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -56,13 +56,24 @@ $$(".bottom-nav button").forEach(b=>b.addEventListener("click",()=>showView(b.da
 async function api(path, params={}){
   const url = new URL(API_BASE + path);
   Object.entries(params).forEach(([k,v])=>url.searchParams.set(k,v));
-  const controller = new AbortController();
-  const timeout = setTimeout(()=>controller.abort(),12000);
-  try{
-    const r = await fetch(url,{signal:controller.signal,cache:"no-store"});
-    if(!r.ok) throw new Error("API "+r.status);
-    return await r.json();
-  } finally { clearTimeout(timeout); }
+  let lastError=null;
+  for(let attempt=0;attempt<3;attempt++){
+    const controller = new AbortController();
+    const timeout = setTimeout(()=>controller.abort(),20000);
+    try{
+      const r = await fetch(url,{signal:controller.signal,cache:"no-store"});
+      if(!r.ok){
+        const err=new Error("API "+r.status); err.status=r.status; throw err;
+      }
+      return await r.json();
+    }catch(e){
+      lastError=e;
+      const retryable=e?.name==="AbortError" || !e?.status || e.status===429 || e.status>=500;
+      if(!retryable || attempt===2) throw e;
+      await new Promise(resolve=>setTimeout(resolve,500*(attempt+1)));
+    }finally{ clearTimeout(timeout); }
+  }
+  throw lastError||new Error("API sin respuesta");
 }
 
 function ema(values, period){
@@ -129,20 +140,36 @@ function analyze(candles){
 }
 async function getCandles(symbol,interval="1d",limit=500){
   const raw=await api("/klines",{symbol:symbol+"USDT",interval,limit});
-  return raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5]}));
+  return raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5],ct:+x[6]}));
 }
 async function getTicker(symbol){
   return api("/ticker/24hr",{symbol:symbol+"USDT"});
 }
 
+async function fetchJsonWithRetry(url,attempts=3){
+  let lastError=null;
+  for(let attempt=0;attempt<attempts;attempt++){
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),20000);
+    try{
+      const r=await fetch(url,{signal:controller.signal,cache:"no-store"});
+      if(!r.ok){const e=new Error("HTTP "+r.status);e.status=r.status;throw e;}
+      return await r.json();
+    }catch(e){
+      lastError=e;
+      if(attempt===attempts-1) throw e;
+      await new Promise(resolve=>setTimeout(resolve,500*(attempt+1)));
+    }finally{clearTimeout(timeout)}
+  }
+  throw lastError||new Error("Sin respuesta");
+}
 async function getScannerUniverse(){
   // Universo: Top 100 por capitalización. CoinGecko se usa porque ofrece este ranking
   // sin clave en navegador; después Binance valida que el par USDT sea operable.
   let ranked=[];
   try{
     const u=new URL(COINGECKO_MARKETS);u.searchParams.set("vs_currency","usd");u.searchParams.set("order","market_cap_desc");u.searchParams.set("per_page","100");u.searchParams.set("page","1");u.searchParams.set("sparkline","false");
-    const r=await fetch(u,{cache:"no-store"});if(!r.ok)throw new Error("ranking "+r.status);
-    ranked=(await r.json()).map(x=>String(x.symbol||"").toUpperCase()).filter(Boolean);
+    ranked=(await fetchJsonWithRetry(u)).map(x=>String(x.symbol||"").toUpperCase()).filter(Boolean);
   }catch(e){console.warn("ranking market cap",e)}
   const [exchange,tickers]=await Promise.all([api("/exchangeInfo"),api("/ticker/24hr")]);
   const tradable=new Set(exchange.symbols.filter(x=>x.status==="TRADING"&&x.quoteAsset==="USDT"&&x.isSpotTradingAllowed!==false).map(x=>x.baseAsset));
@@ -231,7 +258,7 @@ function renderHome(){
   $("#homeReasons").innerHTML=homeReasonRows(best).map(r=>`<div class="reason-row ${r.tone}"><span>${r.icon}</span><p>${r.text}</p></div>`).join("");
   $("#homeAnalyzeBtn").disabled=false; $("#homeAnalyzeBtn").dataset.symbol=symbol;
   $("#homePaperBtn").dataset.symbol=symbol;
-  state.pendingPaperSignal={symbol,side,interval:tf,score,scoreType:"timeframe",snapshot:{longScore:d.longScore,shortScore:d.shortScore,rsi:d.rsi,adx:d.adx,atrPct:d.atrPct,volumeRatio:d.volumeRatio,trend:d.trend,ema20:d.e20.at(-1),ema50:d.e50.at(-1),ema200:d.e200.at(-1)},createdAt:Date.now()};
+  state.pendingPaperSignal={symbol,side,interval:tf,score,scoreType:"timeframe",snapshot:{longScore:d.longScore,shortScore:d.shortScore,rsi:d.rsi,adx:d.adx,atrPct:d.atrPct,volumeRatio:d.volumeRatio,trend:d.trend,ema20:d.e20.at(-2),ema50:d.e50.at(-2),ema200:d.e200.at(-2)},createdAt:Date.now()};
 }
 async function refreshHomeTimeframe(interval){
   state.homeInterval=interval;
@@ -315,7 +342,7 @@ async function scanAutoPaper(manual=false){
   let opened=0, universe=[];
   try{universe=await getScannerUniverse()}catch(e){console.warn("scanner universe",e);if(status)status.textContent="No se pudo cargar el universo de mercado";return}
   if(status)status.textContent=`Escaneando ${universe.length} criptos aptas del Top 100…`;
-  const scanRows=await mapWithConcurrency(universe,6,async sym=>{
+  const scanRows=await mapWithConcurrency(universe,3,async sym=>{
     try{
       const candles=await getCandles(sym,a.interval,a.interval==="1w"?260:500),analysis=analyze(candles),signalIndex=Math.max(1,candles.length-2),signalCandle=candles[signalIndex];
       const row={symbol:sym,longScore:analysis.longScore,shortScore:analysis.shortScore,price:analysis.price};
@@ -328,7 +355,7 @@ async function scanAutoPaper(manual=false){
       const entry=signalCandle.c,lv=paperLevels(entry,pick.side,"percent",a.stopPct,"percent",a.targetPct),riskDist=Math.abs(entry-lv.stop),rewardDist=Math.abs(lv.target-entry),rr=riskDist?rewardDist/riskDist:0;
       if(rr<3)return row;
       const riskCash=a.capital*a.riskPct/100,qty=riskDist?riskCash/riskDist:0;
-      state.paperTrades.unshift({id:Date.now()+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry,stop:lv.stop,target:lv.target,openedAt:signalCandle.t,status:"open",current:analysis.price,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*rewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:{longScore:analysis.longScore,shortScore:analysis.shortScore,rsi:analysis.rsi,adx:analysis.adx,atrPct:analysis.atrPct,volumeRatio:analysis.volumeRatio,trend:analysis.trend,ema20:analysis.e20.at(-1),ema50:analysis.e50.at(-1),ema200:analysis.e200.at(-1)},notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez`,auto:true,closedAt:null,exit:null,resultPct:null});
+      state.paperTrades.unshift({id:Date.now()+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry,stop:lv.stop,target:lv.target,openedAt:(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1)+1,status:"open",current:analysis.price,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*rewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:{longScore:analysis.longScore,shortScore:analysis.shortScore,rsi:analysis.rsi,adx:analysis.adx,atrPct:analysis.atrPct,volumeRatio:analysis.volumeRatio,trend:analysis.trend,ema20:analysis.e20.at(-2),ema50:analysis.e50.at(-2),ema200:analysis.e200.at(-2)},notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez`,auto:true,entryTimingFixed:true,monitorFrom:(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1)+1,closedAt:null,exit:null,resultPct:null});
       a.lastSignals[key]=signalId;opened++; return row;
     }catch(e){console.warn("auto paper",sym,e);return null}
   });
@@ -688,9 +715,22 @@ async function createPaperTrade(){
   if(completed<3&&!confirm(`Solo completaste ${completed} de 4 controles. ¿Guardar de todos modos?`)) return;
   state.paperTrades.unshift({id:now,symbol:sym,side,interval:int,entry,stop:lv.stop,target:lv.target,openedAt:now,status:"open",current:entry,score,capital,riskPct,riskCash,qty,potentialProfit,rr,checklist,
     scoreType:usePending&&pending.combo?"1D+4H":"timeframe",scoreDaily:usePending&&pending.combo?pending.combo.dailyScore:null,score4h:usePending&&pending.combo?pending.combo.entryScore:null,
-    snapshot:usePending?pending.snapshot:{longScore:a.longScore,shortScore:a.shortScore,rsi:a.rsi,adx:a.adx,atrPct:a.atrPct,volumeRatio:a.volumeRatio,trend:a.trend,ema20:a.e20.at(-1),ema50:a.e50.at(-1),ema200:a.e200.at(-1)},
+    snapshot:usePending?pending.snapshot:{longScore:a.longScore,shortScore:a.shortScore,rsi:a.rsi,adx:a.adx,atrPct:a.atrPct,volumeRatio:a.volumeRatio,trend:a.trend,ema20:a.e20.at(-2),ema50:a.e50.at(-2),ema200:a.e200.at(-2)},
     notes:$("#paperNotes").value.trim(),closedAt:null,exit:null,resultPct:null});
   savePaperState();state.pendingPaperSignal=null;$("#paperNotes").value="";["checkTrend","checkSignal","checkRisk","checkNoImpulse"].forEach(id=>$("#"+id).checked=false);renderPaperTrades();alert("Prueba guardada. La app seguirá su resultado.");
+}
+function intervalMs(interval){
+  return ({"15m":15*60e3,"1h":60*60e3,"4h":4*60*60e3,"1d":24*60*60e3,"1w":7*24*60*60e3})[interval]||60*60e3;
+}
+function tradeResultPct(t,exit){
+  if(!(t?.entry>0&&exit>0)) return 0;
+  return (t.side==="long"?(exit-t.entry):(t.entry-exit))/t.entry*100;
+}
+function firstSafeCandleTime(t){
+  // Las operaciones automáticas antiguas (v6.8.3 y previas) guardaban openedAt como
+  // apertura de la vela que generó la señal. Para ellas saltamos esa vela completa.
+  if(t.auto && !t.entryTimingFixed) return t.openedAt+intervalMs(t.interval);
+  return t.openedAt;
 }
 function favorableRFromPrice(t,price){
   const risk=Math.abs(t.entry-t.stop); if(!(risk>0&&price>0)) return 0;
@@ -706,7 +746,7 @@ async function backfillPaperMFE(){
   const missing=state.paperTrades.filter(t=>t.status!=="open"&&t.closedAt&&!(t.mfeR>=0));
   for(const t of missing){
     try{
-      const raw=await api("/klines",{symbol:t.symbol+"USDT",interval:t.interval,startTime:t.openedAt,endTime:t.closedAt,limit:1000});
+      const raw=await api("/klines",{symbol:t.symbol+"USDT",interval:t.interval,startTime:firstSafeCandleTime(t),endTime:t.closedAt,limit:1000});
       const candles=raw.map(x=>({t:+x[0],h:+x[2],l:+x[3]}));
       t.mfeR=0;t.mfePrice=t.entry;
       for(const c of candles){
@@ -722,7 +762,7 @@ async function backfillPaperMFE(){
   if(missing.length) savePaperState();
 }
 let paperTradeUpdateRunning=false;
-const PAPER_TRADE_CONCURRENCY=6;
+const PAPER_TRADE_CONCURRENCY=3;
 const paperMonitor={lastRun:null,lastDuration:0,checked:0,closed:0,errors:0,totalOpen:0,lastError:"",nextRun:null};
 
 function renderPaperMonitor(){
@@ -743,21 +783,42 @@ function renderPaperMonitor(){
 async function checkOnePaperTrade(t){
   const before=t.status;
   try{
-    const raw=await api("/klines",{symbol:t.symbol+"USDT",interval:t.interval,startTime:t.openedAt,limit:1000});
-    const candles=raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5]}));
-    if(!candles.length) return {ok:false,closed:false,error:"Sin velas devueltas"};
-    t.current=candles.at(-1).c;
-    for(const c of candles){
+    const step=intervalMs(t.interval);
+    let startTime=Math.max(firstSafeCandleTime(t),Number(t.monitorFrom||0));
+    let all=[];
+    // Pagina para poder recuperarse después de una desconexión larga sin quedar limitado
+    // a las primeras 1000 velas de la operación.
+    for(let page=0;page<20;page++){
+      const raw=await api("/klines",{symbol:t.symbol+"USDT",interval:t.interval,startTime,limit:1000});
+      if(!raw.length) break;
+      const batch=raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5],ct:+x[6]}));
+      all.push(...batch);
+      if(raw.length<1000) break;
+      const next=batch.at(-1).t+step;
+      if(next<=startTime) break;
+      startTime=next;
+    }
+    if(!all.length) return {ok:false,closed:false,error:"Sin velas devueltas"};
+    t.current=all.at(-1).c;
+    for(const c of all){
+      if(c.t<firstSafeCandleTime(t)) continue;
       const stopHit=t.side==="long"?c.l<=t.stop:c.h>=t.stop;
       const targetHit=t.side==="long"?c.h>=t.target:c.l<=t.target;
       if(!stopHit) updateTradeMFE(t,c);
-      // Si stop y objetivo aparecen en la misma vela no conocemos el orden intravela:
-      // mantenemos el criterio conservador de la versión anterior y contamos stop.
+      // Si ambos niveles aparecen en una misma vela, sin datos intravela no conocemos
+      // cuál ocurrió primero. Conservamos el criterio conservador: stop primero.
       if(stopHit&&targetHit){t.status="loss";t.exit=t.stop;t.closedAt=c.t;break}
       if(stopHit){t.status="loss";t.exit=t.stop;t.closedAt=c.t;break}
       if(targetHit){updateTradeMFE(t,c);t.status="win";t.exit=t.target;t.closedAt=c.t;break}
     }
-    if(t.status!=="open") t.resultPct=(t.side==="long"?(t.exit/t.entry-1):(t.entry/t.exit-1))*100;
+    if(t.status!=="open"){
+      t.resultPct=tradeResultPct(t,t.exit);
+      t.monitorFrom=null;
+    }else{
+      // Reprocesamos solo la última vela en la siguiente ronda porque su máximo/mínimo
+      // puede seguir cambiando mientras está abierta; evitamos descargar todo el historial.
+      t.monitorFrom=Math.max(firstSafeCandleTime(t),all.at(-1).t);
+    }
     return {ok:true,closed:before==="open"&&t.status!=="open"};
   }catch(e){
     console.warn("paper",t.symbol,e);
@@ -775,7 +836,7 @@ async function updatePaperTrades(manual=false){
   try{
     const open=state.paperTrades.filter(t=>t.status==="open");
     paperMonitor.totalOpen=open.length; paperMonitor.checked=0; paperMonitor.closed=0; paperMonitor.errors=0;
-    // Procesa hasta 6 posiciones a la vez para que una operación lenta no retrase a todas.
+    // Procesa hasta 3 posiciones a la vez para reducir picos de solicitudes y errores de red.
     for(let i=0;i<open.length;i+=PAPER_TRADE_CONCURRENCY){
       const batch=open.slice(i,i+PAPER_TRADE_CONCURRENCY);
       const results=await Promise.all(batch.map(checkOnePaperTrade));
@@ -823,14 +884,14 @@ function closePaperManual(id){
   const t=state.paperTrades.find(x=>x.id===id);if(!t)return;
   const value=prompt("Precio de cierre manual",t.current||t.entry);if(value===null)return;
   const exit=+value;if(!(exit>0))return alert("Precio inválido.");
-  t.status="manual";t.exit=exit;t.closedAt=Date.now();t.resultPct=(t.side==="long"?(exit/t.entry-1):(t.entry/exit-1))*100;savePaperState();renderPaperTrades();
+  t.status="manual";t.exit=exit;t.closedAt=Date.now();t.resultPct=tradeResultPct(t,exit);savePaperState();renderPaperTrades();
 }
 function deletePaper(id){if(confirm("¿Eliminar esta prueba del diario?")){state.paperTrades=state.paperTrades.filter(x=>x.id!==id);savePaperState();renderPaperTrades()}}
 function tradeCard(t){
   const status={open:"Abierta",win:"Ganada",loss:"Perdida",manual:"Cierre manual"}[t.status];
   const cls={open:"status-open",win:"status-win",loss:"status-loss",manual:"status-manual"}[t.status];
   const current=t.status==="open"?(t.current||t.entry):t.exit;
-  const running=(t.side==="long"?(current/t.entry-1):(t.entry/current-1))*100;
+  const running=tradeResultPct(t,current);
   const pnlCash=(t.side==="long"?(current-t.entry):(t.entry-current))*(t.qty||0);
   const checklistDone=t.checklist?Object.values(t.checklist).filter(Boolean).length:0;
   return `<article class="paper-trade"><div class="paper-head"><div><h3>${t.symbol}/USDT · ${t.side.toUpperCase()}</h3><div class="paper-meta">${t.interval} · ${new Date(t.openedAt).toLocaleString("es-MX")}</div></div><strong class="${cls}">${status}</strong></div>

@@ -1,5 +1,5 @@
 
-// v6.8.4 · correcciones de medición, monitor incremental y conexión
+// v6.8.5 · registro OHLCV por operación + MFE/MAE para backtests exactos
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -355,7 +355,7 @@ async function scanAutoPaper(manual=false){
       const entry=signalCandle.c,lv=paperLevels(entry,pick.side,"percent",a.stopPct,"percent",a.targetPct),riskDist=Math.abs(entry-lv.stop),rewardDist=Math.abs(lv.target-entry),rr=riskDist?rewardDist/riskDist:0;
       if(rr<3)return row;
       const riskCash=a.capital*a.riskPct/100,qty=riskDist?riskCash/riskDist:0;
-      state.paperTrades.unshift({id:Date.now()+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry,stop:lv.stop,target:lv.target,openedAt:(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1)+1,status:"open",current:analysis.price,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*rewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:{longScore:analysis.longScore,shortScore:analysis.shortScore,rsi:analysis.rsi,adx:analysis.adx,atrPct:analysis.atrPct,volumeRatio:analysis.volumeRatio,trend:analysis.trend,ema20:analysis.e20.at(-2),ema50:analysis.e50.at(-2),ema200:analysis.e200.at(-2)},notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez`,auto:true,entryTimingFixed:true,monitorFrom:(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1)+1,closedAt:null,exit:null,resultPct:null});
+      state.paperTrades.unshift({id:Date.now()+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry,stop:lv.stop,target:lv.target,openedAt:(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1)+1,status:"open",current:analysis.price,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*rewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:{longScore:analysis.longScore,shortScore:analysis.shortScore,rsi:analysis.rsi,adx:analysis.adx,atrPct:analysis.atrPct,volumeRatio:analysis.volumeRatio,trend:analysis.trend,ema20:analysis.e20.at(-2),ema50:analysis.e50.at(-2),ema200:analysis.e200.at(-2)},notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez`,auto:true,entryTimingFixed:true,monitorFrom:(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1)+1,closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct"});
       a.lastSignals[key]=signalId;opened++; return row;
     }catch(e){console.warn("auto paper",sym,e);return null}
   });
@@ -716,7 +716,7 @@ async function createPaperTrade(){
   state.paperTrades.unshift({id:now,symbol:sym,side,interval:int,entry,stop:lv.stop,target:lv.target,openedAt:now,status:"open",current:entry,score,capital,riskPct,riskCash,qty,potentialProfit,rr,checklist,
     scoreType:usePending&&pending.combo?"1D+4H":"timeframe",scoreDaily:usePending&&pending.combo?pending.combo.dailyScore:null,score4h:usePending&&pending.combo?pending.combo.entryScore:null,
     snapshot:usePending?pending.snapshot:{longScore:a.longScore,shortScore:a.shortScore,rsi:a.rsi,adx:a.adx,atrPct:a.atrPct,volumeRatio:a.volumeRatio,trend:a.trend,ema20:a.e20.at(-2),ema50:a.e50.at(-2),ema200:a.e200.at(-2)},
-    notes:$("#paperNotes").value.trim(),closedAt:null,exit:null,resultPct:null});
+    notes:$("#paperNotes").value.trim(),closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct"});
   savePaperState();state.pendingPaperSignal=null;$("#paperNotes").value="";["checkTrend","checkSignal","checkRisk","checkNoImpulse"].forEach(id=>$("#"+id).checked=false);renderPaperTrades();alert("Prueba guardada. La app seguirá su resultado.");
 }
 function intervalMs(interval){
@@ -737,10 +737,36 @@ function favorableRFromPrice(t,price){
   const move=t.side==="long"?price-t.entry:t.entry-price;
   return Math.max(0,move/risk);
 }
-function updateTradeMFE(t,candle){
+function adverseRFromPrice(t,price){
+  const risk=Math.abs(t.entry-t.stop); if(!(risk>0&&price>0)) return 0;
+  const move=t.side==="long"?t.entry-price:price-t.entry;
+  return Math.max(0,move/risk);
+}
+function updateTradeExcursions(t,candle){
   const favorablePrice=t.side==="long"?candle.h:candle.l;
-  const r=favorableRFromPrice(t,favorablePrice);
-  if(r>(t.mfeR||0)){t.mfeR=r;t.mfePrice=favorablePrice;t.mfeAt=candle.t;}
+  const adversePrice=t.side==="long"?candle.l:candle.h;
+  const mfe=favorableRFromPrice(t,favorablePrice);
+  const mae=adverseRFromPrice(t,adversePrice);
+  if(mfe>(t.mfeR||0)){t.mfeR=mfe;t.mfePrice=favorablePrice;t.mfeAt=candle.t;}
+  if(mae>(t.maeR||0)){t.maeR=mae;t.maePrice=adversePrice;t.maeAt=candle.t;}
+}
+function updateTradeMFE(t,candle){updateTradeExcursions(t,candle)}
+
+// Registro compacto de velas por operación para poder reproducir después cualquier
+// regla de salida (BE, trailing, escalera, etc.) sin depender sólo del MFE.
+// Formato de cada fila: [t, open, high, low, close, volume, closeTime].
+const PAPER_CANDLE_LOG_MAX=3000;
+function appendTradeCandle(t,c){
+  if(!Array.isArray(t.candleLog)) t.candleLog=[];
+  t.candleFormat="t,o,h,l,c,v,ct";
+  const row=[+c.t,+c.o,+c.h,+c.l,+c.c,+c.v,+c.ct];
+  const last=t.candleLog.at(-1);
+  if(last && +last[0]===+c.t){ t.candleLog[t.candleLog.length-1]=row; return; }
+  if(t.candleLog.length>=PAPER_CANDLE_LOG_MAX){
+    t.candleLogTruncated=true;
+    return;
+  }
+  t.candleLog.push(row);
 }
 async function backfillPaperMFE(){
   const missing=state.paperTrades.filter(t=>t.status!=="open"&&t.closedAt&&!(t.mfeR>=0));
@@ -802,6 +828,7 @@ async function checkOnePaperTrade(t){
     t.current=all.at(-1).c;
     for(const c of all){
       if(c.t<firstSafeCandleTime(t)) continue;
+      appendTradeCandle(t,c);
       const stopHit=t.side==="long"?c.l<=t.stop:c.h>=t.stop;
       const targetHit=t.side==="long"?c.h>=t.target:c.l<=t.target;
       if(!stopHit) updateTradeMFE(t,c);
@@ -895,7 +922,7 @@ function tradeCard(t){
   const pnlCash=(t.side==="long"?(current-t.entry):(t.entry-current))*(t.qty||0);
   const checklistDone=t.checklist?Object.values(t.checklist).filter(Boolean).length:0;
   return `<article class="paper-trade"><div class="paper-head"><div><h3>${t.symbol}/USDT · ${t.side.toUpperCase()}</h3><div class="paper-meta">${t.interval} · ${new Date(t.openedAt).toLocaleString("es-MX")}</div></div><strong class="${cls}">${status}</strong></div>
-  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Máx. avance (MFE)</span><strong>${t.mfeR>=0?"+"+fmt(t.mfeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
+  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Máx. avance (MFE)</span><strong>${t.mfeR>=0?"+"+fmt(t.mfeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Máx. retroceso (MAE)</span><strong>${t.maeR>=0?"-"+fmt(t.maeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Velas guardadas</span><strong>${Array.isArray(t.candleLog)?t.candleLog.length:0}${t.candleLogTruncated?"+ (límite)":""}</strong></div><div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
   <div class="paper-snapshot"><span class="tag">Control ${checklistDone}/4</span><span class="tag">RSI ${fmt(t.snapshot.rsi,1)}</span><span class="tag">ADX ${fmt(t.snapshot.adx,1)}</span><span class="tag">ATR ${fmt(t.snapshot.atrPct,2)}%</span><span class="tag">Vol ${fmt(t.snapshot.volumeRatio,2)}x</span><span class="tag">${t.snapshot.trend}</span></div>
   ${t.notes?`<p class="paper-note">${t.notes.replace(/</g,"&lt;")}</p>`:""}<div class="paper-actions">${t.status==="open"?`<button class="ghost" data-close-paper="${t.id}">Cerrar manual</button>`:"<span></span>"}<button class="danger" data-delete-paper="${t.id}">Eliminar</button></div></article>`;
 }

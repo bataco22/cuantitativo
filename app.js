@@ -1,5 +1,5 @@
 
-// v6.8.6 · recorrido por vela en unidades R + niveles alcanzados (sin cambiar la estrategia)
+// v6.8.7 · comparación prospectiva de salidas: Actual vs Escalera vs Trailing 0.25R
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -355,7 +355,7 @@ async function scanAutoPaper(manual=false){
       const entry=signalCandle.c,lv=paperLevels(entry,pick.side,"percent",a.stopPct,"percent",a.targetPct),riskDist=Math.abs(entry-lv.stop),rewardDist=Math.abs(lv.target-entry),rr=riskDist?rewardDist/riskDist:0;
       if(rr<3)return row;
       const riskCash=a.capital*a.riskPct/100,qty=riskDist?riskCash/riskDist:0;
-      state.paperTrades.unshift({id:Date.now()+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry,stop:lv.stop,target:lv.target,openedAt:(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1)+1,status:"open",current:analysis.price,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*rewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:{longScore:analysis.longScore,shortScore:analysis.shortScore,rsi:analysis.rsi,adx:analysis.adx,atrPct:analysis.atrPct,volumeRatio:analysis.volumeRatio,trend:analysis.trend,ema20:analysis.e20.at(-2),ema50:analysis.e50.at(-2),ema200:analysis.e200.at(-2)},notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez`,auto:true,entryTimingFixed:true,monitorFrom:(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1)+1,closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[]});
+      state.paperTrades.unshift({id:Date.now()+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry,stop:lv.stop,target:lv.target,openedAt:(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1)+1,status:"open",current:analysis.price,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*rewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:{longScore:analysis.longScore,shortScore:analysis.shortScore,rsi:analysis.rsi,adx:analysis.adx,atrPct:analysis.atrPct,volumeRatio:analysis.volumeRatio,trend:analysis.trend,ema20:analysis.e20.at(-2),ema50:analysis.e50.at(-2),ema200:analysis.e200.at(-2)},notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez`,auto:true,entryTimingFixed:true,monitorFrom:(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1)+1,closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison()});
       a.lastSignals[key]=signalId;opened++; return row;
     }catch(e){console.warn("auto paper",sym,e);return null}
   });
@@ -716,7 +716,7 @@ async function createPaperTrade(){
   state.paperTrades.unshift({id:now,symbol:sym,side,interval:int,entry,stop:lv.stop,target:lv.target,openedAt:now,status:"open",current:entry,score,capital,riskPct,riskCash,qty,potentialProfit,rr,checklist,
     scoreType:usePending&&pending.combo?"1D+4H":"timeframe",scoreDaily:usePending&&pending.combo?pending.combo.dailyScore:null,score4h:usePending&&pending.combo?pending.combo.entryScore:null,
     snapshot:usePending?pending.snapshot:{longScore:a.longScore,shortScore:a.shortScore,rsi:a.rsi,adx:a.adx,atrPct:a.atrPct,volumeRatio:a.volumeRatio,trend:a.trend,ema20:a.e20.at(-2),ema50:a.e50.at(-2),ema200:a.e200.at(-2)},
-    notes:$("#paperNotes").value.trim(),closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[]});
+    notes:$("#paperNotes").value.trim(),closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison()});
   savePaperState();state.pendingPaperSignal=null;$("#paperNotes").value="";["checkTrend","checkSignal","checkRisk","checkNoImpulse"].forEach(id=>$("#"+id).checked=false);renderPaperTrades();alert("Prueba guardada. La app seguirá su resultado.");
 }
 function intervalMs(interval){
@@ -801,6 +801,61 @@ function appendTradeRPath(t,c,terminal=""){
   if(t.rPath.length>=PAPER_CANDLE_LOG_MAX){ t.rPathTruncated=true; return; }
   t.rPath.push(row);
 }
+
+// Experimento prospectivo de gestión de salida. Las tres variantes comparten
+// exactamente la misma entrada y las mismas velas. La gestión "actual" sigue
+// siendo el status/exit original; Escalera y Trailing son salidas virtuales.
+function newExitComparison(){
+  return {
+    version:"6.8.7",startedAt:Date.now(),
+    ladder:{status:"open",stopR:-1,resultR:null,closedAt:null,maxR:0},
+    trailing025:{status:"open",stopR:-1,resultR:null,closedAt:null,maxR:0}
+  };
+}
+function hasVirtualOpen(t){
+  const x=t.exitComparison;
+  return !!(x && (x.ladder?.status==="open" || x.trailing025?.status==="open"));
+}
+function needsPaperMonitoring(t){ return t.status==="open" || hasVirtualOpen(t); }
+function ladderStopForMaxR(maxR){
+  if(maxR<1) return -1;
+  if(maxR<1.25) return 0;
+  if(maxR<2) return 1;
+  if(maxR<2.5) return 1.25;
+  if(maxR<3) return 2;
+  // Desde 3R, cada nuevo escalón de 0.5R protege el escalón anterior.
+  const level=Math.floor((maxR+1e-9)*2)/2;
+  return Math.max(2.5,level-0.5);
+}
+function trailing025StopForMaxR(maxR){
+  if(maxR<1) return -1;
+  if(maxR<1.25) return 0;
+  // 1R activa break-even; desde 1.25R cada +0.25R protege el escalón anterior.
+  const level=Math.floor((maxR+1e-9)*4)/4;
+  return Math.max(0,level-0.25);
+}
+function processVirtualExitBranch(branch,c,bestR,worstR,kind){
+  if(!branch || branch.status!=="open") return;
+  // Criterio causal/conservador con OHLC: primero se comprueba el stop que ya
+  // estaba activo al comenzar la vela. Los nuevos escalones se activan después.
+  if(worstR<=branch.stopR+1e-9){
+    branch.status="closed"; branch.resultR=branch.stopR; branch.closedAt=+c.t; return;
+  }
+  branch.maxR=Math.max(Number(branch.maxR||0),bestR);
+  const next=kind==="ladder"?ladderStopForMaxR(branch.maxR):trailing025StopForMaxR(branch.maxR);
+  branch.stopR=Math.max(Number(branch.stopR??-1),next);
+}
+function processExitComparison(t,c){
+  if(!t.exitComparison) return;
+  const hR=signedRFromPrice(t,c.h),lR=signedRFromPrice(t,c.l);
+  const bestR=Math.max(hR,lR),worstR=Math.min(hR,lR);
+  processVirtualExitBranch(t.exitComparison.ladder,c,bestR,worstR,"ladder");
+  processVirtualExitBranch(t.exitComparison.trailing025,c,bestR,worstR,"trailing");
+}
+function comparisonLabel(branch){
+  if(!branch) return "—";
+  return branch.status==="open"?`Abierta · stop ${branch.stopR>=0?"+":""}${fmt(branch.stopR,2)}R · máx. +${fmt(branch.maxR||0,2)}R`:`${branch.resultR>=0?"+":""}${fmt(branch.resultR,2)}R`;
+}
 async function backfillPaperMFE(){
   const missing=state.paperTrades.filter(t=>t.status!=="open"&&t.closedAt&&!(t.mfeR>=0));
   for(const t of missing){
@@ -826,7 +881,7 @@ const paperMonitor={lastRun:null,lastDuration:0,checked:0,closed:0,errors:0,tota
 
 function renderPaperMonitor(){
   const box=$("#paperMonitor"); if(!box) return;
-  const active=state.paperTrades.some(t=>t.status==="open");
+  const active=state.paperTrades.some(needsPaperMonitoring);
   const now=Date.now();
   const next=paperMonitor.nextRun?Math.max(0,Math.ceil((paperMonitor.nextRun-now)/1000)):null;
   const stamp=paperMonitor.lastRun?new Date(paperMonitor.lastRun).toLocaleTimeString("es-MX",{hour:"2-digit",minute:"2-digit",second:"2-digit"}):"Aún no revisa";
@@ -866,15 +921,19 @@ async function checkOnePaperTrade(t){
       const targetHit=t.side==="long"?c.h>=t.target:c.l<=t.target;
       const terminal=stopHit&&targetHit?"both":stopHit?"stop":targetHit?"target":"";
       appendTradeRPath(t,c,terminal);
-      if(!stopHit) updateTradeMFE(t,c);
-      // Si ambos niveles aparecen en una misma vela, sin datos intravela no conocemos
-      // cuál ocurrió primero. Conservamos el criterio conservador: stop primero.
-      if(stopHit&&targetHit){t.status="loss";t.exit=t.stop;t.closedAt=c.t;break}
-      if(stopHit){t.status="loss";t.exit=t.stop;t.closedAt=c.t;break}
-      if(targetHit){updateTradeMFE(t,c);t.status="win";t.exit=t.target;t.closedAt=c.t;break}
+      processExitComparison(t,c);
+      if(t.status==="open"){
+        if(!stopHit) updateTradeMFE(t,c);
+        // Si ambos niveles aparecen en una misma vela, sin datos intravela no conocemos
+        // cuál ocurrió primero. Conservamos el criterio conservador: stop primero.
+        if(stopHit&&targetHit){t.status="loss";t.exit=t.stop;t.closedAt=c.t}
+        else if(stopHit){t.status="loss";t.exit=t.stop;t.closedAt=c.t}
+        else if(targetHit){updateTradeMFE(t,c);t.status="win";t.exit=t.target;t.closedAt=c.t}
+        if(t.status!=="open") t.resultPct=tradeResultPct(t,t.exit);
+      }
+      if(!needsPaperMonitoring(t)) break;
     }
-    if(t.status!=="open"){
-      t.resultPct=tradeResultPct(t,t.exit);
+    if(!needsPaperMonitoring(t)){
       t.monitorFrom=null;
     }else{
       // Reprocesamos solo la última vela en la siguiente ronda porque su máximo/mínimo
@@ -896,7 +955,7 @@ async function updatePaperTrades(manual=false){
   paperMonitor.lastError="";
   renderPaperMonitor();
   try{
-    const open=state.paperTrades.filter(t=>t.status==="open");
+    const open=state.paperTrades.filter(needsPaperMonitoring);
     paperMonitor.totalOpen=open.length; paperMonitor.checked=0; paperMonitor.closed=0; paperMonitor.errors=0;
     // Procesa hasta 3 posiciones a la vez para reducir picos de solicitudes y errores de red.
     for(let i=0;i<open.length;i+=PAPER_TRADE_CONCURRENCY){
@@ -930,17 +989,17 @@ const PAPER_TRADE_CHECK_MS=45*1000;
 paperMonitor.nextRun=Date.now()+PAPER_TRADE_CHECK_MS;
 setInterval(renderPaperMonitor,1000);
 setInterval(()=>{
-  if(document.visibilityState==="visible" && state.paperTrades.some(t=>t.status==="open")){
+  if(document.visibilityState==="visible" && state.paperTrades.some(needsPaperMonitoring)){
     updatePaperTrades();
   }
 },PAPER_TRADE_CHECK_MS);
 document.addEventListener("visibilitychange",()=>{
-  if(document.visibilityState==="visible" && state.paperTrades.some(t=>t.status==="open")){
+  if(document.visibilityState==="visible" && state.paperTrades.some(needsPaperMonitoring)){
     updatePaperTrades();
   }
 });
 window.addEventListener("focus",()=>{
-  if(state.paperTrades.some(t=>t.status==="open")) updatePaperTrades();
+  if(state.paperTrades.some(needsPaperMonitoring)) updatePaperTrades();
 });
 function closePaperManual(id){
   const t=state.paperTrades.find(x=>x.id===id);if(!t)return;
@@ -957,7 +1016,7 @@ function tradeCard(t){
   const pnlCash=(t.side==="long"?(current-t.entry):(t.entry-current))*(t.qty||0);
   const checklistDone=t.checklist?Object.values(t.checklist).filter(Boolean).length:0;
   return `<article class="paper-trade"><div class="paper-head"><div><h3>${t.symbol}/USDT · ${t.side.toUpperCase()}</h3><div class="paper-meta">${t.interval} · ${new Date(t.openedAt).toLocaleString("es-MX")}</div></div><strong class="${cls}">${status}</strong></div>
-  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Máx. avance (MFE)</span><strong>${t.mfeR>=0?"+"+fmt(t.mfeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Máx. retroceso (MAE)</span><strong>${t.maeR>=0?"-"+fmt(t.maeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Velas guardadas</span><strong>${Array.isArray(t.candleLog)?t.candleLog.length:0}${t.candleLogTruncated?"+ (límite)":""}</strong></div><div class="paper-level"><span>Recorrido R</span><strong>${Array.isArray(t.rPath)?t.rPath.length:0} velas · máx. nivel ${Array.isArray(t.rLevelsHit)&&t.rLevelsHit.length?fmt(Math.max(...t.rLevelsHit),2)+"R":"0R"}${t.rPathTruncated?" + (límite)":""}</strong></div><div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
+  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Máx. avance (MFE)</span><strong>${t.mfeR>=0?"+"+fmt(t.mfeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Máx. retroceso (MAE)</span><strong>${t.maeR>=0?"-"+fmt(t.maeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Velas guardadas</span><strong>${Array.isArray(t.candleLog)?t.candleLog.length:0}${t.candleLogTruncated?"+ (límite)":""}</strong></div><div class="paper-level"><span>Recorrido R</span><strong>${Array.isArray(t.rPath)?t.rPath.length:0} velas · máx. nivel ${Array.isArray(t.rLevelsHit)&&t.rLevelsHit.length?fmt(Math.max(...t.rLevelsHit),2)+"R":"0R"}${t.rPathTruncated?" + (límite)":""}</strong></div>${t.exitComparison?`<div class="paper-level"><span>Escalera</span><strong>${comparisonLabel(t.exitComparison.ladder)}</strong></div><div class="paper-level"><span>Trailing 0.25R</span><strong>${comparisonLabel(t.exitComparison.trailing025)}</strong></div>`:""}<div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
   <div class="paper-snapshot"><span class="tag">Control ${checklistDone}/4</span><span class="tag">RSI ${fmt(t.snapshot.rsi,1)}</span><span class="tag">ADX ${fmt(t.snapshot.adx,1)}</span><span class="tag">ATR ${fmt(t.snapshot.atrPct,2)}%</span><span class="tag">Vol ${fmt(t.snapshot.volumeRatio,2)}x</span><span class="tag">${t.snapshot.trend}</span></div>
   ${t.notes?`<p class="paper-note">${t.notes.replace(/</g,"&lt;")}</p>`:""}<div class="paper-actions">${t.status==="open"?`<button class="ghost" data-close-paper="${t.id}">Cerrar manual</button>`:"<span></span>"}<button class="danger" data-delete-paper="${t.id}">Eliminar</button></div></article>`;
 }
@@ -1044,11 +1103,22 @@ function renderPaperTrades(){
   const avgRR=closed.length?closed.reduce((sum,t)=>sum+(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop)||0),0)/closed.length:0;
   const totalCash=closed.reduce((sum,t)=>sum+((t.side==="long"?((t.exit||t.entry)-t.entry):(t.entry-(t.exit||t.entry)))*(t.qty||0)),0);
 
+  const compared=state.paperTrades.filter(t=>t.exitComparison);
+  const actualDone=compared.filter(t=>t.status!=="open"&&t.exit!=null);
+  const actualR=actualDone.reduce((sum,t)=>sum+signedRFromPrice(t,t.exit),0);
+  const ladderDone=compared.filter(t=>t.exitComparison.ladder?.status==="closed");
+  const trailDone=compared.filter(t=>t.exitComparison.trailing025?.status==="closed");
+  const ladderR=ladderDone.reduce((s,t)=>s+Number(t.exitComparison.ladder.resultR||0),0);
+  const trailR=trailDone.reduce((s,t)=>s+Number(t.exitComparison.trailing025.resultR||0),0);
+
   $("#paperStats").innerHTML=[
     ["Pruebas cerradas",closed.length],["Ganadoras",wins],["Perdedoras",losses],
     ["Acierto",fmt(rate,1)+"%"],["Resultado acumulado",(totalPct>=0?"+":"")+fmt(totalPct,2)+"%"],
     ["Resultado en dinero",(totalCash>=0?"+":"")+money(totalCash)],
-    ["Resultado promedio",(avg>=0?"+":"")+fmt(avg,2)+"%"],["R/B promedio","1 : "+fmt(avgRR,2)]
+    ["Resultado promedio",(avg>=0?"+":"")+fmt(avg,2)+"%"],["R/B promedio","1 : "+fmt(avgRR,2)],
+    ["Actual · cerradas",actualDone.length],["Actual · acumulado",(actualR>=0?"+":"")+fmt(actualR,2)+"R"],
+    ["Escalera · cerradas",ladderDone.length],["Escalera · acumulado",(ladderR>=0?"+":"")+fmt(ladderR,2)+"R"],
+    ["Trailing 0.25R · cerradas",trailDone.length],["Trailing 0.25R · acumulado",(trailR>=0?"+":"")+fmt(trailR,2)+"R"]
   ].map(([k,v])=>`<div class="result-card"><span>${k}</span><strong>${v}</strong></div>`).join("");
 
   const mfeKnown=closed.filter(t=>t.mfeR>=0);
@@ -1091,6 +1161,9 @@ function exportPaperCSV(){
     entrada:t.entry,stop:t.stop,objetivo:t.target,salida:t.exit||"",estado:t.status,
     resultado_pct:t.resultPct??"",cantidad:t.qty||"",riesgo_dinero:t.riskCash||"",score:t.score,
     rsi:t.snapshot?.rsi??"",adx:t.snapshot?.adx??"",volumen:t.snapshot?.volumeRatio??"",
+    actual_r:t.status!=="open"&&t.exit!=null?signedRFromPrice(t,t.exit):"",
+    escalera_estado:t.exitComparison?.ladder?.status||"",escalera_r:t.exitComparison?.ladder?.resultR??"",
+    trailing025_estado:t.exitComparison?.trailing025?.status||"",trailing025_r:t.exitComparison?.trailing025?.resultR??"",
     notas:(t.notes||"").replace(/\n/g," ")
   }));
   if(!rows.length)return alert("No hay operaciones para exportar.");

@@ -237,3 +237,6 @@ textarea{width:100%;margin-top:6px;background:#0a1626;color:var(--text);border:1
 .paper-monitor-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.paper-monitor-grid span{display:block;padding:8px 9px;border-radius:10px;background:rgba(255,255,255,.035);font-size:.61rem;color:var(--muted)}.paper-monitor-grid strong{display:block;margin-top:3px;font-size:.78rem;color:var(--text)}
 .paper-monitor-error{margin-top:9px;padding:8px 9px;border-radius:10px;background:rgba(255,184,77,.08);font-size:.67rem;color:var(--warn);word-break:break-word}.compact-btn{padding:7px 10px;font-size:.7rem}
 @media(max-width:560px){.paper-monitor-grid{grid-template-columns:repeat(2,1fr)}.paper-monitor-head{align-items:flex-start}.paper-monitor-head strong{font-size:.76rem}}
+
+/* v6.9.2 · detalle visual Laboratorio QRA */
+.qra-trades-panel{margin:14px 0 22px}.qra-trades-panel summary{cursor:pointer;padding:14px 16px;border:1px solid rgba(120,160,210,.28);border-radius:16px;background:rgba(15,35,58,.72);font-size:1rem}.qra-trades-panel[open] summary{margin-bottom:12px}.qra-trade-card{text-align:left}.qra-trade-lines{margin-top:10px;display:grid;gap:6px;font-size:.88rem;line-height:1.35}.qra-trade-lines b{font-weight:800}

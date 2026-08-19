@@ -10,7 +10,7 @@
   <title>Centro de Trading Cuantitativo</title>
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
-  <link rel="stylesheet" href="./styles.css?v=6.9.1" />
+  <link rel="stylesheet" href="./styles.css?v=6.9.2" />
 </head>
 <body>
   <header class="app-header">
@@ -345,6 +345,7 @@
       <div id="paperStats" class="results-grid"></div>
       <div class="section-head mfe-head"><div><h3>🧪 Laboratorio QRA · fuera de muestra</h3><p>Control intacto vs Solo LONG, QRA-01 y sus dos salidas virtuales. QRA-03 sólo registra concentración por ahora.</p></div></div>
       <div id="qraLabStats" class="results-grid"></div>
+      <details class="qra-trades-panel" open><summary><strong>Ver operaciones QRA</strong></summary><div id="qraLabTrades" class="results-grid"></div></details>
       <div class="section-head mfe-head"><div><h3>🎯 ¿Hasta dónde llegaron realmente?</h3><p>Máximo avance favorable antes del cierre, medido en R.</p></div></div>
       <div id="paperMfeStats" class="results-grid mfe-grid"></div>
       <div id="paperInsights" class="insights-card"></div>
@@ -444,8 +445,8 @@
     </form>
   </dialog>
 
-  <script src="./app.js?v=6.9.1"></script>
+  <script src="./app.js?v=6.9.2"></script>
 
-<div id="appVersionBadge" style="position:fixed;right:8px;bottom:8px;z-index:9999;font-size:10px;opacity:.45;pointer-events:none">v6.9.1</div>
+<div id="appVersionBadge" style="position:fixed;right:8px;bottom:8px;z-index:9999;font-size:10px;opacity:.45;pointer-events:none">v6.9.2</div>
 </body>
 </html>

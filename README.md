@@ -59,3 +59,7 @@ Las operaciones nuevas conservan la salida actual 1:3 y, sobre la misma entrada 
 - Se muestra en el Laboratorio QRA junto con Control CQ y QRA-01.
 - La decisión Solo LONG queda guardada en cada nueva operación y también se exporta al CSV.
 - Las operaciones QRA existentes sin el nuevo campo se interpretan por su dirección para mantener continuidad de la muestra fuera de entrenamiento.
+
+
+## v6.9.2 — vista de operaciones QRA
+Añade una vista desplegable en Pruebas para inspeccionar cada operación nueva del laboratorio: Control, Solo LONG, QRA-01, Escalera, Trailing y observación QRA-03. No modifica las reglas ni el motor original.

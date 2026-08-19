@@ -1,5 +1,5 @@
 
-// v6.9.1 · Laboratorio QRA prospectivo + Solo LONG + comparación de salidas
+// v6.9.2 · Laboratorio QRA prospectivo + vista de operaciones
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -384,6 +384,18 @@ function renderQraLabStats(){
     ["Inicio fuera de muestra",new Date(QRA_LAB_STARTED_AT).toLocaleString("es-MX")]
   ];
   box.innerHTML=cards.map(([k,v])=>`<div class="result-card"><span>${k}</span><strong>${v}</strong></div>`).join("");
+  renderQraLabTrades();
+}
+function renderQraLabTrades(){
+  const box=$("#qraLabTrades"); if(!box) return;
+  const lab=state.paperTrades.filter(t=>t.qraLab?.version===QRA_LAB_VERSION).sort((a,b)=>(b.openedAt||0)-(a.openedAt||0));
+  if(!lab.length){ box.innerHTML='<div class="notice">Todavía no hay operaciones nuevas del Laboratorio QRA.</div>'; return; }
+  box.innerHTML=lab.map(t=>{
+    const actual=qraActualR(t), ladder=qraBranchR(t,"ladder"), trail=qraBranchR(t,"trailing025");
+    const status=t.status==="open"?"ABIERTA":(actual!=null?`${actual>=0?"+":""}${fmt(actual,2)}R`:"CERRADA");
+    const val=v=>v==null?"En seguimiento":`${v>=0?"+":""}${fmt(v,2)}R`;
+    return `<div class="result-card qra-trade-card"><span>${new Date(t.openedAt).toLocaleString("es-MX")} · ${t.interval||""}</span><strong>${t.symbol} · ${(t.side||"").toUpperCase()} · ${status}</strong><div class="qra-trade-lines"><div>CQ Control: <b>${status}</b></div><div>Solo LONG: <b>${(t.qraLab.soloLongAccepted ?? t.side==="long")?"ACEPTA":"RECHAZA"}</b></div><div>QRA-01: <b>${t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"}</b> · BTC ${t.qraLab.btcRegime}</div><div>QRA + Escalera: <b>${t.qraLab.qra01Accepted?val(ladder):"NO TOMADA"}</b></div><div>QRA + Trailing: <b>${t.qraLab.qra01Accepted?val(trail):"NO TOMADA"}</b></div><div>QRA-03: <b>${Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1}</b> señal(es) misma dirección</div></div></div>`;
+  }).join("");
 }
 
 function renderScannerResults(){

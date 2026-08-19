@@ -42,3 +42,20 @@ Sube todos los archivos y carpetas a la raíz del repositorio de GitHub Pages. E
 
 ## v6.8.7 — comparación prospectiva de salidas
 Las operaciones nuevas conservan la salida actual 1:3 y, sobre la misma entrada y las mismas velas, simulan en paralelo dos salidas virtuales: Escalera y Trailing 0.25R. No cambia la lógica de señales ni el riesgo inicial. Las salidas virtuales continúan siendo monitorizadas aunque la salida actual ya haya cerrado, para permitir que la Escalera supere 3R. Con velas OHLC, cuando el orden intravela es desconocido se usa un criterio causal conservador: primero se evalúa el stop ya activo al inicio de la vela y después se activan nuevos escalones.
+
+
+## v6.9.0 — Laboratorio QRA prospectivo
+- Mantiene Centro Quant original como control.
+- Cada nueva operación registra el régimen diario de BTC con regla causal de cierre previo vs 3 cierres anteriores.
+- QRA-01 marca como BLOQUEADO todo SHORT cuando BTC está ALCISTA, sin borrar ni impedir la operación de control.
+- Compara virtualmente QRA-01 + salida actual, QRA-01 + Escalera y QRA-01 + Trailing 0.25R.
+- QRA-03 registra la concentración de señales en la misma dirección sin imponer todavía un límite de riesgo.
+- La muestra QRA comienza al instalar/abrir esta versión y no reetiqueta operaciones históricas.
+
+
+## v6.9.1 — variante Solo LONG
+- Añade una cartera virtual prospectiva “Solo LONG”: acepta todas las señales LONG y rechaza todas las SHORT.
+- No modifica ni impide las operaciones del Centro Quant original.
+- Se muestra en el Laboratorio QRA junto con Control CQ y QRA-01.
+- La decisión Solo LONG queda guardada en cada nueva operación y también se exporta al CSV.
+- Las operaciones QRA existentes sin el nuevo campo se interpretan por su dirección para mantener continuidad de la muestra fuera de entrenamiento.

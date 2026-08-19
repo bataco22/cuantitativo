@@ -1,5 +1,5 @@
 
-// v6.8.7 · comparación prospectiva de salidas: Actual vs Escalera vs Trailing 0.25R
+// v6.9.1 · Laboratorio QRA prospectivo + Solo LONG + comparación de salidas
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -24,6 +24,11 @@ const COINGECKO_MARKETS = "https://api.coingecko.com/api/v3/coins/markets";
 const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS","PYUSD","USD1","BUSD","FRAX","LUSD","GUSD","USDP","EURC","EURI"]);
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
+const QRA_LAB_VERSION = "QRA-OOS-1";
+const QRA_LAB_STARTED_AT = Number(localStorage.getItem("quant_qra_lab_started_at")||0) || Date.now();
+if(!localStorage.getItem("quant_qra_lab_started_at")) localStorage.setItem("quant_qra_lab_started_at",String(QRA_LAB_STARTED_AT));
+const qraRegimeCache=new Map();
+
 const state = {
   assets: JSON.parse(localStorage.getItem("quant_assets") || "null") || DEFAULT_ASSETS,
   weights: JSON.parse(localStorage.getItem("quant_weights") || "null") || DEFAULT_WEIGHTS,
@@ -320,6 +325,67 @@ function readAutoPaperControls(){
   };saveAutoPaper();syncAutoPaperControls();
 }
 
+async function getQraBtcRegime(atTime=Date.now()){
+  const dayKey=Math.floor(Number(atTime)/86400000);
+  if(qraRegimeCache.has(dayKey)) return qraRegimeCache.get(dayKey);
+  let out={state:"DESCONOCIDO",close:null,asOf:null,rule:"prev-close-3bar-breakout"};
+  try{
+    const raw=await api("/klines",{symbol:"BTCUSDT",interval:"1d",endTime:Math.max(0,Number(atTime)-1),limit:8});
+    const closed=raw.map(x=>({t:+x[0],c:+x[4],ct:+x[6]})).filter(x=>x.ct<Number(atTime));
+    if(closed.length>=4){
+      const last=closed.at(-1), prev=closed.slice(-4,-1).map(x=>x.c);
+      const stateBtc=last.c>Math.max(...prev)?"ALCISTA":last.c<Math.min(...prev)?"BAJISTA":"TRANSICIÓN";
+      out={state:stateBtc,close:last.c,asOf:last.ct,rule:"prev-close-3bar-breakout"};
+    }
+  }catch(e){ console.warn("QRA BTC regime",e); }
+  qraRegimeCache.set(dayKey,out);
+  return out;
+}
+function qraExposureSnapshot(side,openedAt){
+  const peers=state.paperTrades.filter(t=>t.status==="open"&&t.side===side&&Number(t.openedAt)<=Number(openedAt));
+  return {sameDirectionOpen:peers.length,sameDirectionRiskCash:peers.reduce((s,t)=>s+Number(t.riskCash||0),0)};
+}
+async function buildQraLabSnapshot(side,openedAt){
+  const regime=await getQraBtcRegime(openedAt);
+  const blocked=side==="short"&&regime.state==="ALCISTA";
+  const exposure=qraExposureSnapshot(side,openedAt);
+  return {version:QRA_LAB_VERSION,evaluatedAt:Date.now(),sampleStartedAt:QRA_LAB_STARTED_AT,btcRegime:regime.state,btcClose:regime.close,btcAsOf:regime.asOf,rule:regime.rule,qra01Accepted:!blocked,qra01Reason:blocked?"SHORT bloqueado: BTC ALCISTA":"Aceptada por QRA-01",soloLongAccepted:side==="long",soloLongReason:side==="long"?"Aceptada: LONG":"Rechazada: estrategia Solo LONG",qra03Observation:exposure};
+}
+function qraActualR(t){ return t.status!=="open"&&t.exit!=null?signedRFromPrice(t,t.exit):null; }
+function qraBranchR(t,key){ const b=t.exitComparison?.[key]; return b?.status==="closed"?Number(b.resultR||0):null; }
+function renderQraLabStats(){
+  const box=$("#qraLabStats"); if(!box) return;
+  const lab=state.paperTrades.filter(t=>t.qraLab?.version===QRA_LAB_VERSION);
+  if(!lab.length){
+    box.innerHTML='<div class="notice">Laboratorio QRA listo. La muestra fuera de entrenamiento empezará con las próximas operaciones guardadas.</div>';
+    return;
+  }
+  const closed=lab.filter(t=>t.status!=="open"&&t.exit!=null);
+  const accepted=closed.filter(t=>t.qraLab.qra01Accepted);
+  const rejected=closed.filter(t=>!t.qraLab.qra01Accepted);
+  const controlR=closed.reduce((s,t)=>s+Number(qraActualR(t)||0),0);
+  const qraR=accepted.reduce((s,t)=>s+Number(qraActualR(t)||0),0);
+  const soloLong=closed.filter(t=>(t.qraLab?.soloLongAccepted ?? (t.side==="long")));
+  const soloLongR=soloLong.reduce((s,t)=>s+Number(qraActualR(t)||0),0);
+  const ladder=accepted.map(t=>qraBranchR(t,"ladder")).filter(v=>v!==null);
+  const trail=accepted.map(t=>qraBranchR(t,"trailing025")).filter(v=>v!==null);
+  const ladderR=ladder.reduce((a,b)=>a+b,0),trailR=trail.reduce((a,b)=>a+b,0);
+  const rejectedControlR=rejected.reduce((s,t)=>s+Number(qraActualR(t)||0),0);
+  const maxPeers=Math.max(0,...lab.map(t=>Number(t.qraLab?.qra03Observation?.sameDirectionOpen||0)+1));
+  const cards=[
+    ["Muestra QRA",`${closed.length} cerradas · ${lab.filter(t=>t.status==="open").length} abiertas`],
+    ["Control CQ",`${controlR>=0?"+":""}${fmt(controlR,2)}R`],
+    ["QRA-01",`${qraR>=0?"+":""}${fmt(qraR,2)}R`],
+    ["Solo LONG",`${soloLongR>=0?"+":""}${fmt(soloLongR,2)}R · ${soloLong.length} cerradas`],
+    ["QRA-01 + Escalera",ladder.length?`${ladderR>=0?"+":""}${fmt(ladderR,2)}R · ${ladder.length} cerradas`:"Esperando"],
+    ["QRA-01 + Trailing",trail.length?`${trailR>=0?"+":""}${fmt(trailR,2)}R · ${trail.length} cerradas`:"Esperando"],
+    ["Rechazadas QRA-01",`${rejected.length} · control ${rejectedControlR>=0?"+":""}${fmt(rejectedControlR,2)}R`],
+    ["Máx. señales misma dirección",maxPeers],
+    ["Inicio fuera de muestra",new Date(QRA_LAB_STARTED_AT).toLocaleString("es-MX")]
+  ];
+  box.innerHTML=cards.map(([k,v])=>`<div class="result-card"><span>${k}</span><strong>${v}</strong></div>`).join("");
+}
+
 function renderScannerResults(){
   const box=$("#scannerResults"), meta=$("#scannerResultsMeta"); if(!box)return;
   const rows=state.scannerResults||[];
@@ -355,7 +421,9 @@ async function scanAutoPaper(manual=false){
       const entry=signalCandle.c,lv=paperLevels(entry,pick.side,"percent",a.stopPct,"percent",a.targetPct),riskDist=Math.abs(entry-lv.stop),rewardDist=Math.abs(lv.target-entry),rr=riskDist?rewardDist/riskDist:0;
       if(rr<3)return row;
       const riskCash=a.capital*a.riskPct/100,qty=riskDist?riskCash/riskDist:0;
-      state.paperTrades.unshift({id:Date.now()+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry,stop:lv.stop,target:lv.target,openedAt:(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1)+1,status:"open",current:analysis.price,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*rewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:{longScore:analysis.longScore,shortScore:analysis.shortScore,rsi:analysis.rsi,adx:analysis.adx,atrPct:analysis.atrPct,volumeRatio:analysis.volumeRatio,trend:analysis.trend,ema20:analysis.e20.at(-2),ema50:analysis.e50.at(-2),ema200:analysis.e200.at(-2)},notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez`,auto:true,entryTimingFixed:true,monitorFrom:(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1)+1,closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison()});
+      const openedAt=(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1)+1;
+      const qraLab=await buildQraLabSnapshot(pick.side,openedAt);
+      state.paperTrades.unshift({id:Date.now()+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry,stop:lv.stop,target:lv.target,openedAt,status:"open",current:analysis.price,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*rewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:{longScore:analysis.longScore,shortScore:analysis.shortScore,rsi:analysis.rsi,adx:analysis.adx,atrPct:analysis.atrPct,volumeRatio:analysis.volumeRatio,trend:analysis.trend,ema20:analysis.e20.at(-2),ema50:analysis.e50.at(-2),ema200:analysis.e200.at(-2)},notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez`,auto:true,entryTimingFixed:true,monitorFrom:openedAt,closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qraLab});
       a.lastSignals[key]=signalId;opened++; return row;
     }catch(e){console.warn("auto paper",sym,e);return null}
   });
@@ -713,10 +781,11 @@ async function createPaperTrade(){
   const checklist={trend:$("#checkTrend").checked,signal:$("#checkSignal").checked,risk:$("#checkRisk").checked,noImpulse:$("#checkNoImpulse").checked};
   const completed=Object.values(checklist).filter(Boolean).length;
   if(completed<3&&!confirm(`Solo completaste ${completed} de 4 controles. ¿Guardar de todos modos?`)) return;
+  const qraLab=await buildQraLabSnapshot(side,now);
   state.paperTrades.unshift({id:now,symbol:sym,side,interval:int,entry,stop:lv.stop,target:lv.target,openedAt:now,status:"open",current:entry,score,capital,riskPct,riskCash,qty,potentialProfit,rr,checklist,
     scoreType:usePending&&pending.combo?"1D+4H":"timeframe",scoreDaily:usePending&&pending.combo?pending.combo.dailyScore:null,score4h:usePending&&pending.combo?pending.combo.entryScore:null,
     snapshot:usePending?pending.snapshot:{longScore:a.longScore,shortScore:a.shortScore,rsi:a.rsi,adx:a.adx,atrPct:a.atrPct,volumeRatio:a.volumeRatio,trend:a.trend,ema20:a.e20.at(-2),ema50:a.e50.at(-2),ema200:a.e200.at(-2)},
-    notes:$("#paperNotes").value.trim(),closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison()});
+    notes:$("#paperNotes").value.trim(),closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qraLab});
   savePaperState();state.pendingPaperSignal=null;$("#paperNotes").value="";["checkTrend","checkSignal","checkRisk","checkNoImpulse"].forEach(id=>$("#"+id).checked=false);renderPaperTrades();alert("Prueba guardada. La app seguirá su resultado.");
 }
 function intervalMs(interval){
@@ -1016,7 +1085,7 @@ function tradeCard(t){
   const pnlCash=(t.side==="long"?(current-t.entry):(t.entry-current))*(t.qty||0);
   const checklistDone=t.checklist?Object.values(t.checklist).filter(Boolean).length:0;
   return `<article class="paper-trade"><div class="paper-head"><div><h3>${t.symbol}/USDT · ${t.side.toUpperCase()}</h3><div class="paper-meta">${t.interval} · ${new Date(t.openedAt).toLocaleString("es-MX")}</div></div><strong class="${cls}">${status}</strong></div>
-  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Máx. avance (MFE)</span><strong>${t.mfeR>=0?"+"+fmt(t.mfeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Máx. retroceso (MAE)</span><strong>${t.maeR>=0?"-"+fmt(t.maeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Velas guardadas</span><strong>${Array.isArray(t.candleLog)?t.candleLog.length:0}${t.candleLogTruncated?"+ (límite)":""}</strong></div><div class="paper-level"><span>Recorrido R</span><strong>${Array.isArray(t.rPath)?t.rPath.length:0} velas · máx. nivel ${Array.isArray(t.rLevelsHit)&&t.rLevelsHit.length?fmt(Math.max(...t.rLevelsHit),2)+"R":"0R"}${t.rPathTruncated?" + (límite)":""}</strong></div>${t.exitComparison?`<div class="paper-level"><span>Escalera</span><strong>${comparisonLabel(t.exitComparison.ladder)}</strong></div><div class="paper-level"><span>Trailing 0.25R</span><strong>${comparisonLabel(t.exitComparison.trailing025)}</strong></div>`:""}<div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
+  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Máx. avance (MFE)</span><strong>${t.mfeR>=0?"+"+fmt(t.mfeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Máx. retroceso (MAE)</span><strong>${t.maeR>=0?"-"+fmt(t.maeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Velas guardadas</span><strong>${Array.isArray(t.candleLog)?t.candleLog.length:0}${t.candleLogTruncated?"+ (límite)":""}</strong></div><div class="paper-level"><span>Recorrido R</span><strong>${Array.isArray(t.rPath)?t.rPath.length:0} velas · máx. nivel ${Array.isArray(t.rLevelsHit)&&t.rLevelsHit.length?fmt(Math.max(...t.rLevelsHit),2)+"R":"0R"}${t.rPathTruncated?" + (límite)":""}</strong></div>${t.exitComparison?`<div class="paper-level"><span>Escalera</span><strong>${comparisonLabel(t.exitComparison.ladder)}</strong></div><div class="paper-level"><span>Trailing 0.25R</span><strong>${comparisonLabel(t.exitComparison.trailing025)}</strong></div>`:""}${t.qraLab?`<div class="paper-level"><span>QRA-01</span><strong>${t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"} · BTC ${t.qraLab.btcRegime}</strong></div><div class="paper-level"><span>Solo LONG</span><strong>${(t.qraLab.soloLongAccepted ?? (t.side==="long"))?"ACEPTA":"RECHAZA"}</strong></div><div class="paper-level"><span>QRA-03 observación</span><strong>${Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1} señal(es) misma dirección</strong></div>`:""}<div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
   <div class="paper-snapshot"><span class="tag">Control ${checklistDone}/4</span><span class="tag">RSI ${fmt(t.snapshot.rsi,1)}</span><span class="tag">ADX ${fmt(t.snapshot.adx,1)}</span><span class="tag">ATR ${fmt(t.snapshot.atrPct,2)}%</span><span class="tag">Vol ${fmt(t.snapshot.volumeRatio,2)}x</span><span class="tag">${t.snapshot.trend}</span></div>
   ${t.notes?`<p class="paper-note">${t.notes.replace(/</g,"&lt;")}</p>`:""}<div class="paper-actions">${t.status==="open"?`<button class="ghost" data-close-paper="${t.id}">Cerrar manual</button>`:"<span></span>"}<button class="danger" data-delete-paper="${t.id}">Eliminar</button></div></article>`;
 }
@@ -1120,6 +1189,7 @@ function renderPaperTrades(){
     ["Escalera · cerradas",ladderDone.length],["Escalera · acumulado",(ladderR>=0?"+":"")+fmt(ladderR,2)+"R"],
     ["Trailing 0.25R · cerradas",trailDone.length],["Trailing 0.25R · acumulado",(trailR>=0?"+":"")+fmt(trailR,2)+"R"]
   ].map(([k,v])=>`<div class="result-card"><span>${k}</span><strong>${v}</strong></div>`).join("");
+  renderQraLabStats();
 
   const mfeKnown=closed.filter(t=>t.mfeR>=0);
   const rLevels=[1,1.5,2,2.5,3];
@@ -1164,6 +1234,7 @@ function exportPaperCSV(){
     actual_r:t.status!=="open"&&t.exit!=null?signedRFromPrice(t,t.exit):"",
     escalera_estado:t.exitComparison?.ladder?.status||"",escalera_r:t.exitComparison?.ladder?.resultR??"",
     trailing025_estado:t.exitComparison?.trailing025?.status||"",trailing025_r:t.exitComparison?.trailing025?.resultR??"",
+    qra_version:t.qraLab?.version||"",btc_regimen:t.qraLab?.btcRegime||"",qra01:t.qraLab?(t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"):"",qra01_motivo:t.qraLab?.qra01Reason||"",solo_long:t.qraLab?((t.qraLab.soloLongAccepted ?? (t.side==="long"))?"ACEPTA":"RECHAZA"):"",solo_long_motivo:t.qraLab?.soloLongReason||(t.qraLab?(t.side==="long"?"Aceptada: LONG":"Rechazada: estrategia Solo LONG"):""),qra03_misma_direccion:t.qraLab?(Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1):"",
     notas:(t.notes||"").replace(/\n/g," ")
   }));
   if(!rows.length)return alert("No hay operaciones para exportar.");

@@ -1,22 +1,10 @@
 {
-  "name": "Centro Quant v6.7",
-  "short_name": "Quant v6.6",
-  "description": "Centro Quant v6.7: análisis, simulador, diario y motor de score configurable.",
+  "name": "Centro Quant",
+  "short_name": "Centro Quant",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#07101d",
+  "background_color": "#07111f",
   "theme_color": "#0b1220",
-  "icons": [
-    {
-      "src": "./icons/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png"
-    },
-    {
-      "src": "./icons/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png"
-    }
-  ]
+  "lang": "es-MX"
 }

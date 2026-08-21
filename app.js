@@ -1,5 +1,5 @@
 
-// v6.9.3 · Corrección de almacenamiento y seguimiento eficiente
+// v6.9.4 · métricas reales de riesgo + control de cuota + auditoría intravela
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -754,26 +754,37 @@ $("#calcPositionBtn").onclick=()=>{
 };
 
 
-function compactTradeStorage(t){
-  // v6.9.3: conserva OHLCV y toda la lógica/R, pero elimina closeTime (redundante)
-  // de velas ya guardadas. Esto reduce el tamaño sin cambiar señales ni salidas.
-  if(Array.isArray(t.candleLog)){
-    t.candleLog=t.candleLog.map(row=>Array.isArray(row)&&row.length>6?row.slice(0,6):row);
-    t.candleFormat="t,o,h,l,c,v";
+function compactClosedCandleLogsForStorage(){
+  // candleLog (OHLCV bruto) y rPath contienen información parcialmente redundante.
+  // Para operaciones cerradas, rPath conserva el recorrido normalizado necesario para
+  // reproducir BE/trailing/escalera. Eliminamos el OHLCV bruto cerrado sólo cuando
+  // hace falta espacio, evitando que localStorage bloquee el seguimiento con QuotaExceededError.
+  const closed=state.paperTrades
+    .filter(t=>t.status!=="open" && Array.isArray(t.candleLog) && t.candleLog.length)
+    .sort((a,b)=>Number(a.closedAt||0)-Number(b.closedAt||0));
+  for(const t of closed){
+    t.candleLogCount=Number(t.candleLogCount||t.candleLog.length||0);
+    t.candleLog=[];
+    t.candleLogCompacted=true;
   }
 }
 function savePaperState(){
-  const key="quant_paper_trades";
+  let payload=JSON.stringify(state.paperTrades);
   try{
-    localStorage.setItem(key,JSON.stringify(state.paperTrades));
+    localStorage.setItem("quant_paper_trades",payload);
     return true;
   }catch(e){
-    // Safari/iOS lanza QuotaExceededError cuando localStorage se llena.
-    // Compactamos datos redundantes y reintentamos una vez, sin borrar operaciones.
-    if(e?.name!=="QuotaExceededError" && !/quota/i.test(String(e?.message||e))) throw e;
-    state.paperTrades.forEach(compactTradeStorage);
-    localStorage.setItem(key,JSON.stringify(state.paperTrades));
-    return true;
+    const quota=e?.name==="QuotaExceededError" || /quota/i.test(String(e?.message||e));
+    if(!quota) throw e;
+    compactClosedCandleLogsForStorage();
+    payload=JSON.stringify(state.paperTrades);
+    try{
+      localStorage.setItem("quant_paper_trades",payload);
+      return true;
+    }catch(e2){
+      console.error("Centro Quant: almacenamiento local lleno incluso después de compactar",e2);
+      throw new Error("Almacenamiento local lleno. Centro Quant compactó las velas cerradas, pero aún falta espacio. Exporta un respaldo antes de continuar.");
+    }
   }
 }
 function paperLevels(entry,side,stopMode,stopValue,targetMode,targetValue){
@@ -818,7 +829,7 @@ async function createPaperTrade(){
   state.paperTrades.unshift({id:now,symbol:sym,side,interval:int,entry,stop:lv.stop,target:lv.target,openedAt:now,status:"open",current:entry,score,capital,riskPct,riskCash,qty,potentialProfit,rr,checklist,
     scoreType:usePending&&pending.combo?"1D+4H":"timeframe",scoreDaily:usePending&&pending.combo?pending.combo.dailyScore:null,score4h:usePending&&pending.combo?pending.combo.entryScore:null,
     snapshot:usePending?pending.snapshot:{longScore:a.longScore,shortScore:a.shortScore,rsi:a.rsi,adx:a.adx,atrPct:a.atrPct,volumeRatio:a.volumeRatio,trend:a.trend,ema20:a.e20.at(-2),ema50:a.e50.at(-2),ema200:a.e200.at(-2)},
-    notes:$("#paperNotes").value.trim(),closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qraLab});
+    notes:$("#paperNotes").value.trim(),closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qraLab});
   savePaperState();state.pendingPaperSignal=null;$("#paperNotes").value="";["checkTrend","checkSignal","checkRisk","checkNoImpulse"].forEach(id=>$("#"+id).checked=false);renderPaperTrades();alert("Prueba guardada. La app seguirá su resultado.");
 }
 function intervalMs(interval){
@@ -860,8 +871,8 @@ function updateTradeMFE(t,candle){updateTradeExcursions(t,candle)}
 const PAPER_CANDLE_LOG_MAX=3000;
 function appendTradeCandle(t,c){
   if(!Array.isArray(t.candleLog)) t.candleLog=[];
-  t.candleFormat="t,o,h,l,c,v";
-  const row=[+c.t,+c.o,+c.h,+c.l,+c.c,+c.v];
+  t.candleFormat="t,o,h,l,c,v,ct";
+  const row=[+c.t,+c.o,+c.h,+c.l,+c.c,+c.v,+c.ct];
   const last=t.candleLog.at(-1);
   if(last && +last[0]===+c.t){ t.candleLog[t.candleLog.length-1]=row; return; }
   if(t.candleLog.length>=PAPER_CANDLE_LOG_MAX){
@@ -996,28 +1007,23 @@ function renderPaperMonitor(){
   const btn=$("#paperCheckNowBtn"); if(btn) btn.onclick=()=>updatePaperTrades(true);
 }
 
-async function checkOnePaperTrade(t,prefetched=null){
+async function checkOnePaperTrade(t){
   const before=t.status;
   try{
     const step=intervalMs(t.interval);
     let startTime=Math.max(firstSafeCandleTime(t),Number(t.monitorFrom||0));
     let all=[];
-    if(Array.isArray(prefetched)){
-      // Una sola descarga puede alimentar varias operaciones del mismo símbolo/TF.
-      all=prefetched.filter(c=>c.t>=startTime);
-    }else{
-      // Pagina para poder recuperarse después de una desconexión larga sin quedar limitado
-      // a las primeras 1000 velas de la operación.
-      for(let page=0;page<20;page++){
-        const raw=await api("/klines",{symbol:t.symbol+"USDT",interval:t.interval,startTime,limit:1000});
-        if(!raw.length) break;
-        const batch=raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5],ct:+x[6]}));
-        all.push(...batch);
-        if(raw.length<1000) break;
-        const next=batch.at(-1).t+step;
-        if(next<=startTime) break;
-        startTime=next;
-      }
+    // Pagina para poder recuperarse después de una desconexión larga sin quedar limitado
+    // a las primeras 1000 velas de la operación.
+    for(let page=0;page<20;page++){
+      const raw=await api("/klines",{symbol:t.symbol+"USDT",interval:t.interval,startTime,limit:1000});
+      if(!raw.length) break;
+      const batch=raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5],ct:+x[6]}));
+      all.push(...batch);
+      if(raw.length<1000) break;
+      const next=batch.at(-1).t+step;
+      if(next<=startTime) break;
+      startTime=next;
     }
     if(!all.length) return {ok:false,closed:false,error:"Sin velas devueltas"};
     t.current=all.at(-1).c;
@@ -1064,43 +1070,16 @@ async function updatePaperTrades(manual=false){
   try{
     const open=state.paperTrades.filter(needsPaperMonitoring);
     paperMonitor.totalOpen=open.length; paperMonitor.checked=0; paperMonitor.closed=0; paperMonitor.errors=0;
-    // v6.9.3: agrupa por símbolo + temporalidad. Si hay varias operaciones iguales,
-    // descarga las velas una vez desde el monitorFrom más antiguo y las reutiliza.
-    const groups=new Map();
-    for(const t of open){
-      const key=`${t.symbol}|${t.interval}`;
-      if(!groups.has(key)) groups.set(key,[]);
-      groups.get(key).push(t);
-    }
-    for(const trades of groups.values()){
-      let shared=null, sharedError=null;
-      try{
-        const sample=trades[0], step=intervalMs(sample.interval);
-        let startTime=Math.min(...trades.map(t=>Math.max(firstSafeCandleTime(t),Number(t.monitorFrom||0))));
-        shared=[];
-        for(let page=0;page<20;page++){
-          const raw=await api("/klines",{symbol:sample.symbol+"USDT",interval:sample.interval,startTime,limit:1000});
-          if(!raw.length) break;
-          const batch=raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5],ct:+x[6]}));
-          shared.push(...batch);
-          if(raw.length<1000) break;
-          const next=batch.at(-1).t+step;
-          if(next<=startTime) break;
-          startTime=next;
-        }
-      }catch(e){ sharedError=e; }
-      for(let i=0;i<trades.length;i+=PAPER_TRADE_CONCURRENCY){
-        const batch=trades.slice(i,i+PAPER_TRADE_CONCURRENCY);
-        const results=sharedError
-          ? batch.map(t=>({ok:false,closed:false,error:`${t.symbol}: ${sharedError?.message||sharedError}`}))
-          : await Promise.all(batch.map(t=>checkOnePaperTrade(t,shared)));
-        for(const r of results){
-          if(r?.ok) paperMonitor.checked++;
-          else {paperMonitor.errors++; if(r?.error) paperMonitor.lastError=r.error}
-          if(r?.closed) paperMonitor.closed++;
-        }
-        renderPaperMonitor();
+    // Procesa hasta 3 posiciones a la vez para reducir picos de solicitudes y errores de red.
+    for(let i=0;i<open.length;i+=PAPER_TRADE_CONCURRENCY){
+      const batch=open.slice(i,i+PAPER_TRADE_CONCURRENCY);
+      const results=await Promise.all(batch.map(checkOnePaperTrade));
+      for(const r of results){
+        if(r?.ok) paperMonitor.checked++;
+        else {paperMonitor.errors++; if(r?.error) paperMonitor.lastError=r.error}
+        if(r?.closed) paperMonitor.closed++;
       }
+      renderPaperMonitor();
     }
     savePaperState();
     renderPaperTrades();
@@ -1150,7 +1129,7 @@ function tradeCard(t){
   const pnlCash=(t.side==="long"?(current-t.entry):(t.entry-current))*(t.qty||0);
   const checklistDone=t.checklist?Object.values(t.checklist).filter(Boolean).length:0;
   return `<article class="paper-trade"><div class="paper-head"><div><h3>${t.symbol}/USDT · ${t.side.toUpperCase()}</h3><div class="paper-meta">${t.interval} · ${new Date(t.openedAt).toLocaleString("es-MX")}</div></div><strong class="${cls}">${status}</strong></div>
-  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Máx. avance (MFE)</span><strong>${t.mfeR>=0?"+"+fmt(t.mfeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Máx. retroceso (MAE)</span><strong>${t.maeR>=0?"-"+fmt(t.maeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Velas guardadas</span><strong>${Array.isArray(t.candleLog)?t.candleLog.length:0}${t.candleLogTruncated?"+ (límite)":""}</strong></div><div class="paper-level"><span>Recorrido R</span><strong>${Array.isArray(t.rPath)?t.rPath.length:0} velas · máx. nivel ${Array.isArray(t.rLevelsHit)&&t.rLevelsHit.length?fmt(Math.max(...t.rLevelsHit),2)+"R":"0R"}${t.rPathTruncated?" + (límite)":""}</strong></div>${t.exitComparison?`<div class="paper-level"><span>Escalera</span><strong>${comparisonLabel(t.exitComparison.ladder)}</strong></div><div class="paper-level"><span>Trailing 0.25R</span><strong>${comparisonLabel(t.exitComparison.trailing025)}</strong></div>`:""}${t.qraLab?`<div class="paper-level"><span>QRA-01</span><strong>${t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"} · BTC ${t.qraLab.btcRegime}</strong></div><div class="paper-level"><span>Solo LONG</span><strong>${(t.qraLab.soloLongAccepted ?? (t.side==="long"))?"ACEPTA":"RECHAZA"}</strong></div><div class="paper-level"><span>QRA-03 observación</span><strong>${Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1} señal(es) misma dirección</strong></div>`:""}<div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
+  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Máx. avance (MFE)</span><strong>${t.mfeR>=0?"+"+fmt(t.mfeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Máx. retroceso (MAE)</span><strong>${t.maeR>=0?"-"+fmt(t.maeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Velas OHLC guardadas</span><strong>${Array.isArray(t.candleLog)?t.candleLog.length:0}${t.candleLogCompacted?` · compactadas (${Number(t.candleLogCount||0)} originales)`:t.candleLogTruncated?"+ (límite)":""}</strong></div><div class="paper-level"><span>Recorrido R</span><strong>${Array.isArray(t.rPath)?t.rPath.length:0} velas · máx. nivel ${Array.isArray(t.rLevelsHit)&&t.rLevelsHit.length?fmt(Math.max(...t.rLevelsHit),2)+"R":"0R"}${t.rPathTruncated?" + (límite)":""}</strong></div>${t.exitComparison?`<div class="paper-level"><span>Escalera</span><strong>${comparisonLabel(t.exitComparison.ladder)}</strong></div><div class="paper-level"><span>Trailing 0.25R</span><strong>${comparisonLabel(t.exitComparison.trailing025)}</strong></div>`:""}${t.qraLab?`<div class="paper-level"><span>QRA-01</span><strong>${t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"} · BTC ${t.qraLab.btcRegime}</strong></div><div class="paper-level"><span>Solo LONG</span><strong>${(t.qraLab.soloLongAccepted ?? (t.side==="long"))?"ACEPTA":"RECHAZA"}</strong></div><div class="paper-level"><span>QRA-03 observación</span><strong>${Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1} señal(es) misma dirección</strong></div>`:""}<div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
   <div class="paper-snapshot"><span class="tag">Control ${checklistDone}/4</span><span class="tag">RSI ${fmt(t.snapshot.rsi,1)}</span><span class="tag">ADX ${fmt(t.snapshot.adx,1)}</span><span class="tag">ATR ${fmt(t.snapshot.atrPct,2)}%</span><span class="tag">Vol ${fmt(t.snapshot.volumeRatio,2)}x</span><span class="tag">${t.snapshot.trend}</span></div>
   ${t.notes?`<p class="paper-note">${t.notes.replace(/</g,"&lt;")}</p>`:""}<div class="paper-actions">${t.status==="open"?`<button class="ghost" data-close-paper="${t.id}">Cerrar manual</button>`:"<span></span>"}<button class="danger" data-delete-paper="${t.id}">Eliminar</button></div></article>`;
 }
@@ -1233,9 +1212,18 @@ function renderPaperTrades(){
   const losses=closed.filter(t=>t.status==="loss"||t.resultPct<0).length;
   const rate=closed.length?wins/closed.length*100:0;
   const avg=closed.length?closed.reduce((sum,t)=>sum+(t.resultPct||0),0)/closed.length:0;
-  const totalPct=closed.reduce((sum,t)=>sum+(t.resultPct||0),0);
+  // resultPct es movimiento del activo (+9/-3 con la configuración actual), NO retorno de cuenta.
+  const totalMovePct=closed.reduce((sum,t)=>sum+(t.resultPct||0),0);
   const avgRR=closed.length?closed.reduce((sum,t)=>sum+(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop)||0),0)/closed.length:0;
   const totalCash=closed.reduce((sum,t)=>sum+((t.side==="long"?((t.exit||t.entry)-t.entry):(t.entry-(t.exit||t.entry)))*(t.qty||0)),0);
+  const totalR=closed.reduce((sum,t)=>sum+(t.exit!=null?signedRFromPrice(t,t.exit):0),0);
+  const baseCapital=Number(state.autoPaper?.capital||closed.find(t=>Number(t.capital)>0)?.capital||0);
+  const returnOnBase=baseCapital>0?totalCash/baseCapital*100:0;
+  const openRiskCash=open.reduce((sum,t)=>sum+Number(t.riskCash||0),0);
+  const openRiskPct=baseCapital>0?openRiskCash/baseCapital*100:0;
+  const openLongRisk=open.filter(t=>t.side==="long").reduce((s,t)=>s+Number(t.riskCash||0),0);
+  const openShortRisk=open.filter(t=>t.side==="short").reduce((s,t)=>s+Number(t.riskCash||0),0);
+  const ambiguousBoth=closed.filter(t=>Array.isArray(t.rPath)&&t.rPath.some(r=>r?.[6]==="both")).length;
 
   const compared=state.paperTrades.filter(t=>t.exitComparison);
   const actualDone=compared.filter(t=>t.status!=="open"&&t.exit!=null);
@@ -1247,13 +1235,22 @@ function renderPaperTrades(){
 
   $("#paperStats").innerHTML=[
     ["Pruebas cerradas",closed.length],["Ganadoras",wins],["Perdedoras",losses],
-    ["Acierto",fmt(rate,1)+"%"],["Resultado acumulado",(totalPct>=0?"+":"")+fmt(totalPct,2)+"%"],
-    ["Resultado en dinero",(totalCash>=0?"+":"")+money(totalCash)],
-    ["Resultado promedio",(avg>=0?"+":"")+fmt(avg,2)+"%"],["R/B promedio","1 : "+fmt(avgRR,2)],
+    ["Acierto",fmt(rate,1)+"%"],
+    ["P&L simulado",(totalCash>=0?"+":"")+money(totalCash)],
+    ["Retorno s/capital base",(returnOnBase>=0?"+":"")+fmt(returnOnBase,2)+"% · no compuesto"],
+    ["Resultado real en R",(totalR>=0?"+":"")+fmt(totalR,2)+"R"],
+    ["Movimiento acumulado (no rentabilidad)",(totalMovePct>=0?"+":"")+fmt(totalMovePct,2)+"%"],
+    ["Riesgo abierto agregado",money(openRiskCash)+` · ${fmt(openRiskPct,1)}% del capital base`],
+    ["Riesgo abierto LONG / SHORT",`${money(openLongRisk)} / ${money(openShortRisk)}`],
+    ["Velas stop+target ambiguas",`${ambiguousBoth} · criterio conservador: stop primero`],
+    ["Movimiento promedio",(avg>=0?"+":"")+fmt(avg,2)+"%"],["R/B promedio","1 : "+fmt(avgRR,2)],
     ["Actual · cerradas",actualDone.length],["Actual · acumulado",(actualR>=0?"+":"")+fmt(actualR,2)+"R"],
     ["Escalera · cerradas",ladderDone.length],["Escalera · acumulado",(ladderR>=0?"+":"")+fmt(ladderR,2)+"R"],
     ["Trailing 0.25R · cerradas",trailDone.length],["Trailing 0.25R · acumulado",(trailR>=0?"+":"")+fmt(trailR,2)+"R"]
   ].map(([k,v])=>`<div class="result-card"><span>${k}</span><strong>${v}</strong></div>`).join("");
+  if(openRiskPct>10){
+    $("#paperStats").insertAdjacentHTML("afterbegin",`<div class="result-card risk-alert-card"><span>ALERTA DE EXPOSICIÓN</span><strong>${fmt(openRiskPct,1)}% del capital está en riesgo simultáneo</strong></div>`);
+  }
   renderQraLabStats();
 
   const mfeKnown=closed.filter(t=>t.mfeR>=0);
@@ -1323,7 +1320,7 @@ function createFullBackup(){
   }
   const backup={
     app:"Centro Quant",
-    version:"6.9.3",
+    version:"6.9.4",
     format:1,
     createdAt:new Date().toISOString(),
     data
@@ -1348,8 +1345,16 @@ async function restoreFullBackup(file){
   const oldKeys=[];
   for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith("quant_"))oldKeys.push(k)}
   oldKeys.forEach(k=>localStorage.removeItem(k));
-  entries.forEach(([k,v])=>{if(v!==null)localStorage.setItem(k,v)});
-  alert("Respaldo cargado correctamente. La aplicación se reiniciará para aplicar los datos.");
+  for(const [k,v] of entries){
+    if(v===null) continue;
+    if(k==="quant_paper_trades"){
+      state.paperTrades=JSON.parse(v);
+      savePaperState();
+    }else{
+      localStorage.setItem(k,v);
+    }
+  }
+  alert("Respaldo cargado correctamente. Si era grande, Centro Quant compactó automáticamente OHLC de operaciones cerradas conservando su recorrido R. La aplicación se reiniciará.");
   location.reload();
 }
 

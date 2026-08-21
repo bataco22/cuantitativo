@@ -1,5 +1,5 @@
 
-// v6.9.2 · Laboratorio QRA prospectivo + vista de operaciones
+// v6.9.3 · Corrección de almacenamiento y seguimiento eficiente
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -754,7 +754,28 @@ $("#calcPositionBtn").onclick=()=>{
 };
 
 
-function savePaperState(){localStorage.setItem("quant_paper_trades",JSON.stringify(state.paperTrades))}
+function compactTradeStorage(t){
+  // v6.9.3: conserva OHLCV y toda la lógica/R, pero elimina closeTime (redundante)
+  // de velas ya guardadas. Esto reduce el tamaño sin cambiar señales ni salidas.
+  if(Array.isArray(t.candleLog)){
+    t.candleLog=t.candleLog.map(row=>Array.isArray(row)&&row.length>6?row.slice(0,6):row);
+    t.candleFormat="t,o,h,l,c,v";
+  }
+}
+function savePaperState(){
+  const key="quant_paper_trades";
+  try{
+    localStorage.setItem(key,JSON.stringify(state.paperTrades));
+    return true;
+  }catch(e){
+    // Safari/iOS lanza QuotaExceededError cuando localStorage se llena.
+    // Compactamos datos redundantes y reintentamos una vez, sin borrar operaciones.
+    if(e?.name!=="QuotaExceededError" && !/quota/i.test(String(e?.message||e))) throw e;
+    state.paperTrades.forEach(compactTradeStorage);
+    localStorage.setItem(key,JSON.stringify(state.paperTrades));
+    return true;
+  }
+}
 function paperLevels(entry,side,stopMode,stopValue,targetMode,targetValue){
   const stop=stopMode==="percent"?(side==="long"?entry*(1-stopValue/100):entry*(1+stopValue/100)):stopValue;
   const target=targetMode==="percent"?(side==="long"?entry*(1+targetValue/100):entry*(1-targetValue/100)):targetValue;
@@ -797,7 +818,7 @@ async function createPaperTrade(){
   state.paperTrades.unshift({id:now,symbol:sym,side,interval:int,entry,stop:lv.stop,target:lv.target,openedAt:now,status:"open",current:entry,score,capital,riskPct,riskCash,qty,potentialProfit,rr,checklist,
     scoreType:usePending&&pending.combo?"1D+4H":"timeframe",scoreDaily:usePending&&pending.combo?pending.combo.dailyScore:null,score4h:usePending&&pending.combo?pending.combo.entryScore:null,
     snapshot:usePending?pending.snapshot:{longScore:a.longScore,shortScore:a.shortScore,rsi:a.rsi,adx:a.adx,atrPct:a.atrPct,volumeRatio:a.volumeRatio,trend:a.trend,ema20:a.e20.at(-2),ema50:a.e50.at(-2),ema200:a.e200.at(-2)},
-    notes:$("#paperNotes").value.trim(),closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qraLab});
+    notes:$("#paperNotes").value.trim(),closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qraLab});
   savePaperState();state.pendingPaperSignal=null;$("#paperNotes").value="";["checkTrend","checkSignal","checkRisk","checkNoImpulse"].forEach(id=>$("#"+id).checked=false);renderPaperTrades();alert("Prueba guardada. La app seguirá su resultado.");
 }
 function intervalMs(interval){
@@ -839,8 +860,8 @@ function updateTradeMFE(t,candle){updateTradeExcursions(t,candle)}
 const PAPER_CANDLE_LOG_MAX=3000;
 function appendTradeCandle(t,c){
   if(!Array.isArray(t.candleLog)) t.candleLog=[];
-  t.candleFormat="t,o,h,l,c,v,ct";
-  const row=[+c.t,+c.o,+c.h,+c.l,+c.c,+c.v,+c.ct];
+  t.candleFormat="t,o,h,l,c,v";
+  const row=[+c.t,+c.o,+c.h,+c.l,+c.c,+c.v];
   const last=t.candleLog.at(-1);
   if(last && +last[0]===+c.t){ t.candleLog[t.candleLog.length-1]=row; return; }
   if(t.candleLog.length>=PAPER_CANDLE_LOG_MAX){
@@ -975,23 +996,28 @@ function renderPaperMonitor(){
   const btn=$("#paperCheckNowBtn"); if(btn) btn.onclick=()=>updatePaperTrades(true);
 }
 
-async function checkOnePaperTrade(t){
+async function checkOnePaperTrade(t,prefetched=null){
   const before=t.status;
   try{
     const step=intervalMs(t.interval);
     let startTime=Math.max(firstSafeCandleTime(t),Number(t.monitorFrom||0));
     let all=[];
-    // Pagina para poder recuperarse después de una desconexión larga sin quedar limitado
-    // a las primeras 1000 velas de la operación.
-    for(let page=0;page<20;page++){
-      const raw=await api("/klines",{symbol:t.symbol+"USDT",interval:t.interval,startTime,limit:1000});
-      if(!raw.length) break;
-      const batch=raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5],ct:+x[6]}));
-      all.push(...batch);
-      if(raw.length<1000) break;
-      const next=batch.at(-1).t+step;
-      if(next<=startTime) break;
-      startTime=next;
+    if(Array.isArray(prefetched)){
+      // Una sola descarga puede alimentar varias operaciones del mismo símbolo/TF.
+      all=prefetched.filter(c=>c.t>=startTime);
+    }else{
+      // Pagina para poder recuperarse después de una desconexión larga sin quedar limitado
+      // a las primeras 1000 velas de la operación.
+      for(let page=0;page<20;page++){
+        const raw=await api("/klines",{symbol:t.symbol+"USDT",interval:t.interval,startTime,limit:1000});
+        if(!raw.length) break;
+        const batch=raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5],ct:+x[6]}));
+        all.push(...batch);
+        if(raw.length<1000) break;
+        const next=batch.at(-1).t+step;
+        if(next<=startTime) break;
+        startTime=next;
+      }
     }
     if(!all.length) return {ok:false,closed:false,error:"Sin velas devueltas"};
     t.current=all.at(-1).c;
@@ -1038,16 +1064,43 @@ async function updatePaperTrades(manual=false){
   try{
     const open=state.paperTrades.filter(needsPaperMonitoring);
     paperMonitor.totalOpen=open.length; paperMonitor.checked=0; paperMonitor.closed=0; paperMonitor.errors=0;
-    // Procesa hasta 3 posiciones a la vez para reducir picos de solicitudes y errores de red.
-    for(let i=0;i<open.length;i+=PAPER_TRADE_CONCURRENCY){
-      const batch=open.slice(i,i+PAPER_TRADE_CONCURRENCY);
-      const results=await Promise.all(batch.map(checkOnePaperTrade));
-      for(const r of results){
-        if(r?.ok) paperMonitor.checked++;
-        else {paperMonitor.errors++; if(r?.error) paperMonitor.lastError=r.error}
-        if(r?.closed) paperMonitor.closed++;
+    // v6.9.3: agrupa por símbolo + temporalidad. Si hay varias operaciones iguales,
+    // descarga las velas una vez desde el monitorFrom más antiguo y las reutiliza.
+    const groups=new Map();
+    for(const t of open){
+      const key=`${t.symbol}|${t.interval}`;
+      if(!groups.has(key)) groups.set(key,[]);
+      groups.get(key).push(t);
+    }
+    for(const trades of groups.values()){
+      let shared=null, sharedError=null;
+      try{
+        const sample=trades[0], step=intervalMs(sample.interval);
+        let startTime=Math.min(...trades.map(t=>Math.max(firstSafeCandleTime(t),Number(t.monitorFrom||0))));
+        shared=[];
+        for(let page=0;page<20;page++){
+          const raw=await api("/klines",{symbol:sample.symbol+"USDT",interval:sample.interval,startTime,limit:1000});
+          if(!raw.length) break;
+          const batch=raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5],ct:+x[6]}));
+          shared.push(...batch);
+          if(raw.length<1000) break;
+          const next=batch.at(-1).t+step;
+          if(next<=startTime) break;
+          startTime=next;
+        }
+      }catch(e){ sharedError=e; }
+      for(let i=0;i<trades.length;i+=PAPER_TRADE_CONCURRENCY){
+        const batch=trades.slice(i,i+PAPER_TRADE_CONCURRENCY);
+        const results=sharedError
+          ? batch.map(t=>({ok:false,closed:false,error:`${t.symbol}: ${sharedError?.message||sharedError}`}))
+          : await Promise.all(batch.map(t=>checkOnePaperTrade(t,shared)));
+        for(const r of results){
+          if(r?.ok) paperMonitor.checked++;
+          else {paperMonitor.errors++; if(r?.error) paperMonitor.lastError=r.error}
+          if(r?.closed) paperMonitor.closed++;
+        }
+        renderPaperMonitor();
       }
-      renderPaperMonitor();
     }
     savePaperState();
     renderPaperTrades();
@@ -1270,7 +1323,7 @@ function createFullBackup(){
   }
   const backup={
     app:"Centro Quant",
-    version:"6.6.0",
+    version:"6.9.3",
     format:1,
     createdAt:new Date().toISOString(),
     data

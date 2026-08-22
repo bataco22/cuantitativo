@@ -1515,7 +1515,7 @@ renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTra
 if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(console.warn);
 
 
-// --- v6.9.7: Backtest de mercado Aronson-QRA + sensibilidad trailing ---------------------------------
+// --- v6.9.8: Backtest de mercado Aronson-QRA + sensibilidad trailing + cartera -----------------------
 // Investigación retrospectiva. NO sustituye la cohorte prospectiva. Usa el
 // Top 100 actual, por lo que existe sesgo de supervivencia. La entrada se hace
 // causalmente en la apertura de la vela siguiente a la señal cerrada.
@@ -1540,7 +1540,7 @@ function btNearestExitClose(candles,closeTime){
   for(const x of candles){if(Number(x.ct)>=Number(closeTime))return x;}
   return candles.at(-1)||null;
 }
-function btVirtualStops(){return {ladder:{status:"open",stopR:-1,resultR:null,maxR:0},trail:{status:"open",stopR:-1,resultR:null,maxR:0}};}
+function btVirtualStops(){return {ladder:{status:"open",stopR:-1,resultR:null,maxR:0,closedAt:null,closeIndex:null},trail:{status:"open",stopR:-1,resultR:null,maxR:0,closedAt:null,closeIndex:null}};}
 const BT_TRAILING_SENSITIVITY_STEPS=[0.20,0.25,0.30,0.40,0.50];
 function btGenericTrailingStopForMaxR(maxR,step){
   step=Number(step);
@@ -1552,18 +1552,21 @@ function btGenericTrailingStopForMaxR(maxR,step){
 }
 function btSensitivityBranches(){
   const out={};
-  for(const step of BT_TRAILING_SENSITIVITY_STEPS) out[step.toFixed(2)]={status:"open",stopR:-1,resultR:null,maxR:0};
+  for(const step of BT_TRAILING_SENSITIVITY_STEPS) out[step.toFixed(2)]={status:"open",stopR:-1,resultR:null,maxR:0,closedAt:null,closeIndex:null};
   return out;
 }
-function btAdvanceSensitivity(branch,bestR,worstR,step){
+function btCloseVirtualBranch(branch,bar,index){
+  branch.status="closed"; branch.resultR=branch.stopR; branch.closedAt=Number(bar.t); branch.closeIndex=index;
+}
+function btAdvanceSensitivity(branch,bestR,worstR,step,bar,index){
   if(branch.status!=="open")return;
-  if(worstR<=branch.stopR+1e-9){branch.status="closed";branch.resultR=branch.stopR;return;}
+  if(worstR<=branch.stopR+1e-9){btCloseVirtualBranch(branch,bar,index);return;}
   branch.maxR=Math.max(branch.maxR,bestR);
   branch.stopR=Math.max(branch.stopR,btGenericTrailingStopForMaxR(branch.maxR,step));
 }
-function btAdvanceBranch(branch,bestR,worstR,kind){
+function btAdvanceBranch(branch,bestR,worstR,kind,bar,index){
   if(branch.status!=="open")return;
-  if(worstR<=branch.stopR+1e-9){branch.status="closed";branch.resultR=branch.stopR;return;}
+  if(worstR<=branch.stopR+1e-9){btCloseVirtualBranch(branch,bar,index);return;}
   branch.maxR=Math.max(branch.maxR,bestR);
   const next=kind==="ladder"?ladderStopForMaxR(branch.maxR):trailing025StopForMaxR(branch.maxR);
   branch.stopR=Math.max(branch.stopR,next);
@@ -1576,7 +1579,7 @@ function btSimTrade(symbol,side,score,c,i,feeRate){
   const virt=btVirtualStops(),sens=btSensitivityBranches(); let close=null,grossR=null,closeIndex=null;
   for(let j=i+1;j<c.length;j++){
     const bar=c[j],bestR=Math.max(btSignedR(side,entry,stopDist,bar.h),btSignedR(side,entry,stopDist,bar.l)),worstR=Math.min(btSignedR(side,entry,stopDist,bar.h),btSignedR(side,entry,stopDist,bar.l));
-    btAdvanceBranch(virt.ladder,bestR,worstR,"ladder"); btAdvanceBranch(virt.trail,bestR,worstR,"trail"); for(const [k,b] of Object.entries(sens))btAdvanceSensitivity(b,bestR,worstR,Number(k));
+    btAdvanceBranch(virt.ladder,bestR,worstR,"ladder",bar,j); btAdvanceBranch(virt.trail,bestR,worstR,"trail",bar,j); for(const [k,b] of Object.entries(sens))btAdvanceSensitivity(b,bestR,worstR,Number(k),bar,j);
     const stopHit=side==="long"?bar.l<=stop:bar.h>=stop,targetHit=side==="long"?bar.h>=target:bar.l<=target;
     if(stopHit||targetHit){ // conservador: si ambos ocurren en la misma vela, stop primero
       close=stopHit?stop:target;grossR=stopHit?-1:3;closeIndex=j;break;
@@ -1587,12 +1590,19 @@ function btSimTrade(symbol,side,score,c,i,feeRate){
   if(virt.ladder.status==="open"||virt.trail.status==="open"||Object.values(sens).some(b=>b.status==="open")){
     for(let j=closeIndex+1;j<c.length;j++){
       const bar=c[j],bestR=Math.max(btSignedR(side,entry,stopDist,bar.h),btSignedR(side,entry,stopDist,bar.l)),worstR=Math.min(btSignedR(side,entry,stopDist,bar.h),btSignedR(side,entry,stopDist,bar.l));
-      btAdvanceBranch(virt.ladder,bestR,worstR,"ladder");btAdvanceBranch(virt.trail,bestR,worstR,"trail");for(const [k,b] of Object.entries(sens))btAdvanceSensitivity(b,bestR,worstR,Number(k));
+      btAdvanceBranch(virt.ladder,bestR,worstR,"ladder",bar,j);btAdvanceBranch(virt.trail,bestR,worstR,"trail",bar,j);for(const [k,b] of Object.entries(sens))btAdvanceSensitivity(b,bestR,worstR,Number(k),bar,j);
       if(virt.ladder.status!=="open"&&virt.trail.status!=="open"&&Object.values(sens).every(b=>b.status!=="open"))break;
     }
   }
   const feeR=((entry+close)*feeRate)/stopDist,netR=grossR-feeR;
-  return {symbol,side,score,openedAt:Number(entryBar.t),closedAt:Number(c[closeIndex].t),entry,exit:close,grossR,netR,feeR,ladderR:virt.ladder.status==="closed"?virt.ladder.resultR:null,trailingR:virt.trail.status==="closed"?virt.trail.resultR:null,trailingSensitivity:Object.fromEntries(Object.entries(sens).map(([k,b])=>[k,b.status==="closed"?b.resultR:null]))};
+  const branchExitPrice=b=>b?.status==="closed"?(side==="long"?entry+b.resultR*stopDist:entry-b.resultR*stopDist):null;
+  return {symbol,side,score,openedAt:Number(entryBar.t),closedAt:Number(c[closeIndex].t),entry,exit:close,grossR,netR,feeR,
+    ladderR:virt.ladder.status==="closed"?virt.ladder.resultR:null,ladderExitAt:virt.ladder.closedAt,ladderExitPrice:branchExitPrice(virt.ladder),ladderBarsHeld:virt.ladder.closeIndex!=null?virt.ladder.closeIndex-(i+1)+1:null,
+    trailingR:virt.trail.status==="closed"?virt.trail.resultR:null,trailingExitAt:virt.trail.closedAt,trailingExitPrice:branchExitPrice(virt.trail),trailingBarsHeld:virt.trail.closeIndex!=null?virt.trail.closeIndex-(i+1)+1:null,
+    trailingSensitivity:Object.fromEntries(Object.entries(sens).map(([k,b])=>[k,b.status==="closed"?b.resultR:null])),
+    trailingSensitivityExitAt:Object.fromEntries(Object.entries(sens).map(([k,b])=>[k,b.status==="closed"?b.closedAt:null])),
+    trailingSensitivityExitPrice:Object.fromEntries(Object.entries(sens).map(([k,b])=>[k,branchExitPrice(b)])),
+    trailingSensitivityBarsHeld:Object.fromEntries(Object.entries(sens).map(([k,b])=>[k,b.closeIndex!=null?b.closeIndex-(i+1)+1:null]))};
 }
 function btMaxDrawdown(rows,key="netR",weightKey=null){
   let eq=0,peak=0,dd=0; for(const t of [...rows].sort((a,b)=>a.closedAt-b.closedAt)){const w=weightKey?Number(t[weightKey]??1):1;eq+=Number(t[key]||0)*w;peak=Math.max(peak,eq);dd=Math.max(dd,peak-eq);} return dd;
@@ -1603,6 +1613,25 @@ function btSummary(rows,key="netR",weightKey=null){
   const total=vals.reduce((a,b)=>a+b,0),wins=vals.filter(v=>v>0).length;
   return {n,total,exp:n?total/n:0,win:n?wins/n*100:0,dd:btMaxDrawdown(done,key,weightKey)};
 }
+function btPortfolioFromTrailing(rows,step="0.25",capPct=Infinity){
+  const key=`trailSens_${String(step).replace(".","_")}`;
+  const eligible=rows.filter(t=>Number.isFinite(Number(t[key]))&&Number.isFinite(Number(t.trailingSensitivityExitAt?.[step])));
+  const ordered=[...eligible].sort((a,b)=>a.openedAt-b.openedAt || b.score-a.score || String(a.symbol).localeCompare(String(b.symbol)));
+  const accepted=[],rejected=[]; let active=[]; let maxConcurrent=0;
+  for(const t of ordered){
+    // Si sale en la misma marca temporal, aún consume riesgo durante la apertura de esa vela.
+    active=active.filter(x=>Number(x.exitAt)>=Number(t.openedAt));
+    const currentRisk=active.length;
+    if(currentRisk+1<=capPct+1e-9){
+      const x={trade:t,exitAt:Number(t.trailingSensitivityExitAt?.[step]),r:Number(t[key])};
+      accepted.push(x);active.push(x);maxConcurrent=Math.max(maxConcurrent,active.length);
+    }else rejected.push(t);
+  }
+  const exits=[...accepted].sort((a,b)=>a.exitAt-b.exitAt || a.trade.openedAt-b.trade.openedAt);
+  let eq=0,peak=0,dd=0;for(const x of exits){eq+=x.r;peak=Math.max(peak,eq);dd=Math.max(dd,peak-eq);}
+  return {step,capPct:Number.isFinite(capPct)?capPct:null,signals:eligible.length,accepted:accepted.length,rejected:rejected.length,total:eq,exp:accepted.length?eq/accepted.length:0,dd,maxConcurrent,maxRiskPct:maxConcurrent,acceptRate:eligible.length?accepted.length/eligible.length*100:0};
+}
+function btFmtPortfolio(name,p){return `<div class="result-card"><span>${name}</span><strong>${p.total>=0?"+":""}${fmt(p.total,2)}R</strong><small>${p.accepted}/${p.signals} señales · exp ${p.exp>=0?"+":""}${fmt(p.exp,3)}R · DD realizado ${fmt(p.dd,2)}R · riesgo máx. ${fmt(p.maxRiskPct,0)}%</small></div>`;}
 function btFmtBranch(name,s){return `<div class="result-card"><span>${name}</span><strong>${s.total>=0?"+":""}${fmt(s.total,2)}R</strong><small>${s.n} cerradas · exp ${s.exp>=0?"+":""}${fmt(s.exp,3)}R · DD ${fmt(s.dd,2)}R</small></div>`;}
 async function runMarketAronsonBacktest(){
   const btn=$("#runMarketAronsonBtn"),prog=$("#marketBtProgress"),out=$("#marketBtResults"),detail=$("#marketBtDetail");
@@ -1647,14 +1676,19 @@ async function runMarketAronsonBacktest(){
     const ladderRows=closed.filter(t=>t.ladderNetR!=null),trailRows=closed.filter(t=>t.trailingNetR!=null),ladS=btSummary(ladderRows,"ladderNetR"),trailS=btSummary(trailRows,"trailingNetR"),q1TrailS=btSummary(trailRows.filter(t=>t.qra01Accepted),"trailingNetR");
     const trailingSensitivity={};
     for(const step of BT_TRAILING_SENSITIVITY_STEPS){const k=step.toFixed(2),key=`trailSens_${k.replace(".","_")}`;for(const t of closed)t[key]=t.trailingSensitivityNet?.[k]??null;const rows=closed.filter(t=>t[key]!=null);trailingSensitivity[k]={...btSummary(rows,key),coverage:closed.length?rows.length/closed.length*100:0,long:btSummary(rows.filter(t=>t.side==="long"),key),short:btSummary(rows.filter(t=>t.side==="short"),key),regimes:Object.fromEntries(["ALCISTA","TRANSICIÓN","BAJISTA","DESCONOCIDO"].map(r=>[r,btSummary(rows.filter(t=>t.btcRegime===r),key)]).filter(([,v])=>v.n))};}
+    const trailingPortfolio={
+      unlimited:btPortfolioFromTrailing(closed,"0.25",Infinity),
+      cap10:btPortfolioFromTrailing(closed,"0.25",10),
+      cap20:btPortfolioFromTrailing(closed,"0.25",20)
+    };
 
     const bench=closed.filter(t=>Number.isFinite(t.benchmarkR)),benchR=bench.reduce((s,t)=>s+t.benchmarkR,0),excessR=bench.reduce((s,t)=>s+t.excessR,0);
     const regimes={};for(const r of ["ALCISTA","TRANSICIÓN","BAJISTA","DESCONOCIDO"]){const z=closed.filter(t=>t.btcRegime===r);if(z.length)regimes[r]=btSummary(z);}
     const clusters=new Map();closed.forEach(t=>{const k=t.openedAt;clusters.set(k,(clusters.get(k)||0)+1)});const maxCluster=Math.max(0,...clusters.values());
-    lastMarketAronsonResult={version:"CQ-MARKET-BT-ARONSON-2-SENSITIVITY",createdAt:new Date().toISOString(),interval,bars,universeCount:universe.length,assetsOk:ok,assetsFailed:failed,assumptions:{top100:"Top 100 actual (sesgo de supervivencia)",threshold:85,stopPct:3,targetPct:9,riskPct:1,feePerSidePct:feeRate*100,entry:"apertura de vela siguiente",sameCandle:"stop antes de target",qra03:"<10%=1x;10-<20%=0.5x;20-<30%=0.25x;>=30%=0x",trailingSensitivitySteps:BT_TRAILING_SENSITIVITY_STEPS},summaries:{control:controlS,soloLong:longS,qra01:q1S,qra03:q3S,qra01_qra03:q13S,ladder:ladS,trailing025:trailS,qra01_trailing025:q1TrailS},trailingSensitivity,benchmark:{n:bench.length,btcR:benchR,excessR,excessPerTrade:bench.length?excessR/bench.length:0},regimes,clusters:{count:clusters.size,maxSize:maxCluster},trades:closed};
-    out.innerHTML=btFmtBranch("Control neto",controlS)+btFmtBranch("Solo LONG",longS)+btFmtBranch("QRA-01",q1S)+btFmtBranch("QRA-03 virtual",q3S)+btFmtBranch("QRA-01 + QRA-03",q13S)+btFmtBranch("Escalera",ladS)+btFmtBranch("Trailing 0.25R",trailS)+btFmtBranch("QRA-01 + Trailing",q1TrailS)+Object.entries(trailingSensitivity).map(([k,v])=>btFmtBranch(`Sensibilidad trailing ${k}R`,v)).join("")+`<div class="result-card"><span>Benchmark BTC</span><strong>${excessR>=0?"+":""}${fmt(excessR,2)}R exceso</strong><small>${bench.length} trades · BTC ${benchR>=0?"+":""}${fmt(benchR,2)}R</small></div>`;
+    lastMarketAronsonResult={version:"CQ-MARKET-BT-ARONSON-3-PORTFOLIO",createdAt:new Date().toISOString(),interval,bars,universeCount:universe.length,assetsOk:ok,assetsFailed:failed,assumptions:{top100:"Top 100 actual (sesgo de supervivencia)",threshold:85,stopPct:3,targetPct:9,riskPct:1,feePerSidePct:feeRate*100,entry:"apertura de vela siguiente",sameCandle:"stop antes de target",qra03:"<10%=1x;10-<20%=0.5x;20-<30%=0.25x;>=30%=0x",trailingSensitivitySteps:BT_TRAILING_SENSITIVITY_STEPS,portfolioTrailingStep:"0.25",portfolioPriority:"score desc, symbol asc within same timestamp",portfolioCapsPct:[10,20]},summaries:{control:controlS,soloLong:longS,qra01:q1S,qra03:q3S,qra01_qra03:q13S,ladder:ladS,trailing025:trailS,qra01_trailing025:q1TrailS},trailingSensitivity,trailingPortfolio,benchmark:{n:bench.length,btcR:benchR,excessR,excessPerTrade:bench.length?excessR/bench.length:0},regimes,clusters:{count:clusters.size,maxSize:maxCluster},trades:closed};
+    out.innerHTML=btFmtBranch("Control neto",controlS)+btFmtBranch("Solo LONG",longS)+btFmtBranch("QRA-01",q1S)+btFmtBranch("QRA-03 virtual",q3S)+btFmtBranch("QRA-01 + QRA-03",q13S)+btFmtBranch("Escalera",ladS)+btFmtBranch("Trailing 0.25R",trailS)+btFmtBranch("QRA-01 + Trailing",q1TrailS)+Object.entries(trailingSensitivity).map(([k,v])=>btFmtBranch(`Sensibilidad trailing ${k}R`,v)).join("")+btFmtPortfolio("Cartera 0.25R · sin límite",trailingPortfolio.unlimited)+btFmtPortfolio("Cartera 0.25R · límite 10%",trailingPortfolio.cap10)+btFmtPortfolio("Cartera 0.25R · límite 20%",trailingPortfolio.cap20)+`<div class="result-card"><span>Benchmark BTC</span><strong>${excessR>=0?"+":""}${fmt(excessR,2)}R exceso</strong><small>${bench.length} trades · BTC ${benchR>=0?"+":""}${fmt(benchR,2)}R</small></div>`;
     out.classList.remove("hidden");
-    detail.innerHTML=`<h3>Lectura Aronson-QRA</h3><p><b>${universe.length}</b> activos del Top 100 actual · ${ok} procesados · ${failed} fallidos · ${closed.length} operaciones cerradas · ${clusters.size} clusters · máximo ${maxCluster} señales simultáneas.</p><p><b>Sensibilidad trailing:</b> ${Object.entries(trailingSensitivity).map(([k,v])=>`${k}R: ${v.total>=0?"+":""}${fmt(v.total,1)}R · exp ${v.exp>=0?"+":""}${fmt(v.exp,3)} · DD ${fmt(v.dd,1)}R`).join(" · ")}.</p><p><b>Regímenes BTC:</b> ${Object.entries(regimes).map(([k,v])=>`${k}: ${v.n} trades, ${v.total>=0?"+":""}${fmt(v.total,1)}R`).join(" · ")||"sin datos"}.</p><p><b>Advertencia metodológica:</b> es investigación retrospectiva y usa el Top 100 actual, por lo que existe sesgo de supervivencia. La sensibilidad busca una meseta robusta, no el mejor punto. La validación principal sigue siendo la cohorte prospectiva v6.9.5+.</p>`;detail.classList.remove("hidden");$("#exportMarketBtBtn").classList.remove("hidden");
+    detail.innerHTML=`<h3>Lectura Aronson-QRA</h3><p><b>${universe.length}</b> activos del Top 100 actual · ${ok} procesados · ${failed} fallidos · ${closed.length} operaciones cerradas · ${clusters.size} clusters · máximo ${maxCluster} señales simultáneas.</p><p><b>Sensibilidad trailing:</b> ${Object.entries(trailingSensitivity).map(([k,v])=>`${k}R: ${v.total>=0?"+":""}${fmt(v.total,1)}R · exp ${v.exp>=0?"+":""}${fmt(v.exp,3)} · DD ${fmt(v.dd,1)}R`).join(" · ")}.</p><p><b>Cartera 0.25R:</b> sin límite ${trailingPortfolio.unlimited.total>=0?"+":""}${fmt(trailingPortfolio.unlimited.total,1)}R · límite 10% ${trailingPortfolio.cap10.total>=0?"+":""}${fmt(trailingPortfolio.cap10.total,1)}R, ${trailingPortfolio.cap10.accepted}/${trailingPortfolio.cap10.signals} señales, DD realizado ${fmt(trailingPortfolio.cap10.dd,1)}R · límite 20% ${trailingPortfolio.cap20.total>=0?"+":""}${fmt(trailingPortfolio.cap20.total,1)}R, ${trailingPortfolio.cap20.accepted}/${trailingPortfolio.cap20.signals} señales, DD realizado ${fmt(trailingPortfolio.cap20.dd,1)}R. Prioridad cuando coinciden señales: score mayor y luego símbolo.</p><p><b>Regímenes BTC:</b> ${Object.entries(regimes).map(([k,v])=>`${k}: ${v.n} trades, ${v.total>=0?"+":""}${fmt(v.total,1)}R`).join(" · ")||"sin datos"}.</p><p><b>Advertencia metodológica:</b> es investigación retrospectiva y usa el Top 100 actual, por lo que existe sesgo de supervivencia. La sensibilidad busca una meseta robusta, no el mejor punto. La validación principal sigue siendo la cohorte prospectiva v6.9.5+.</p>`;detail.classList.remove("hidden");$("#exportMarketBtBtn").classList.remove("hidden");
     prog.textContent=`Terminado · ${ok}/${universe.length} activos · ${closed.length} cerradas · control ${controlS.total>=0?"+":""}${fmt(controlS.total,2)}R netas.`;
   }catch(e){console.error(e);prog.textContent="Error: "+e.message;alert("No fue posible completar el backtest de mercado: "+e.message);}finally{btn.disabled=false;btn.textContent="Ejecutar backtest de mercado";}
 }

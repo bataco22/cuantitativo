@@ -1,4 +1,19 @@
-# Centro Quant v6.9.7
+# Centro Quant v6.9.8
+
+Extiende exclusivamente el laboratorio histórico Aronson-QRA. No cambia las reglas del paper trading ni la cohorte prospectiva.
+
+## v6.9.8 · Cartera trailing 0.25R con capital limitado
+- Guarda para cada salida virtual trailing su `exitAt`, precio teórico de salida y velas mantenidas.
+- Conserva la sensibilidad 0.20R, 0.25R, 0.30R, 0.40R y 0.50R.
+- Reconstruye la cartera cronológica del trailing 0.25R usando sus propias fechas de cierre, no las del Control.
+- Reporta tres escenarios: sin límite, riesgo agregado máximo 10% y máximo 20%, asumiendo 1% de riesgo por posición.
+- Si varias señales compiten por capacidad en la misma marca temporal, prioriza Score mayor y después símbolo alfabético para que la selección sea determinista.
+- Las señales rechazadas por falta de presupuesto se cuentan y se exportan; no se reescribe el historial ni se optimiza el límite.
+- El drawdown de cartera reportado es **realizado a cierres**, no mark-to-market intradía.
+
+**Objetivo:** medir cuánto del edge 1D + trailing 0.25R sigue siendo capturable con una cartera de riesgo limitado antes de considerar cualquier cambio en producción.
+
+# Historial previo · Centro Quant v6.9.7
 
 Añade Backtest Mercado Aronson-QRA sobre la base v6.9.5. No cambia las reglas de trading en producción.
 

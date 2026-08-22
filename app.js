@@ -1,5 +1,5 @@
 
-// v6.9.4 · métricas reales de riesgo + control de cuota + auditoría intravela
+// v6.9.5 · almacenamiento robusto + QRA-03 virtual + benchmark BTC + sello formal de hipótesis
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -25,6 +25,20 @@ const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS",
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const QRA_LAB_VERSION = "QRA-OOS-1";
+const APP_VERSION = "6.9.5";
+const RESEARCH_GENERATION = "ARONSON-QRA-2026-08-22-1";
+const HYPOTHESIS_FREEZE_VERSION = "ARONSON-HYPOTHESES-2026-08-22-1";
+const QRA03_VIRTUAL_VERSION = "QRA03-VIRTUAL-1";
+const MARKET_BENCHMARK_VERSION = "BTC-PRIOR-CLOSE-1";
+const HYPOTHESIS_REGISTRY = Object.freeze({
+  qra01:"Bloquear SHORT cuando BTC esté ALCISTA según prev-close-3bar-breakout.",
+  qra03:"Reducir riesgo marginal cuando aumenta la exposición de la misma dirección; visor virtual, nunca modifica el control.",
+  exits:"Control 3R frente a Escalera y Trailing 0.25R como comparadores virtuales.",
+  score:"Evaluar prospectivamente calibración y aporte incremental de los componentes del score.",
+  benchmark:"Medir rendimiento de Quant frente a BTC direccional durante la misma ventana, sin usarlo para ejecutar."
+});
+const PROSPECTIVE_STARTED_AT = Number(localStorage.getItem("quant_aronson_qra_started_at")||0) || Date.now();
+if(!localStorage.getItem("quant_aronson_qra_started_at")) localStorage.setItem("quant_aronson_qra_started_at",String(PROSPECTIVE_STARTED_AT));
 const QRA_LAB_STARTED_AT = Number(localStorage.getItem("quant_qra_lab_started_at")||0) || Date.now();
 if(!localStorage.getItem("quant_qra_lab_started_at")) localStorage.setItem("quant_qra_lab_started_at",String(QRA_LAB_STARTED_AT));
 const qraRegimeCache=new Map();
@@ -263,8 +277,24 @@ function renderHome(){
   $("#homeReasons").innerHTML=homeReasonRows(best).map(r=>`<div class="reason-row ${r.tone}"><span>${r.icon}</span><p>${r.text}</p></div>`).join("");
   $("#homeAnalyzeBtn").disabled=false; $("#homeAnalyzeBtn").dataset.symbol=symbol;
   $("#homePaperBtn").dataset.symbol=symbol;
-  state.pendingPaperSignal={symbol,side,interval:tf,score,scoreType:"timeframe",snapshot:{longScore:d.longScore,shortScore:d.shortScore,rsi:d.rsi,adx:d.adx,atrPct:d.atrPct,volumeRatio:d.volumeRatio,trend:d.trend,ema20:d.e20.at(-2),ema50:d.e50.at(-2),ema200:d.e200.at(-2)},createdAt:Date.now()};
+  state.pendingPaperSignal={symbol,side,interval:tf,score,scoreType:"timeframe",snapshot:buildResearchSnapshot(d,side),createdAt:Date.now()};
 }
+function buildResearchSnapshot(a,side){
+  const factors=side==="short"?a?.shortFactors:a?.longFactors;
+  const factorScores={};
+  if(factors){
+    for(const [k,v] of Object.entries(factors)) factorScores[k]=+((Number(v)||0)*(Number(state.weights[k])||0)).toFixed(4);
+  }
+  return {
+    longScore:a?.longScore??null,shortScore:a?.shortScore??null,rsi:a?.rsi??null,adx:a?.adx??null,atrPct:a?.atrPct??null,volumeRatio:a?.volumeRatio??null,trend:a?.trend??null,
+    ema20:a?.e20?.at?.(-2)??null,ema50:a?.e50?.at?.(-2)??null,ema200:a?.e200?.at?.(-2)??null,
+    selectedSide:side,selectedFactors:factors?{...factors}:null,factorScores,weights:{...state.weights},scoreAlgorithmVersion:APP_VERSION
+  };
+}
+function buildResearchMeta(){
+  return {strategyVersion:APP_VERSION,researchGeneration:RESEARCH_GENERATION,prospectiveStartedAt:PROSPECTIVE_STARTED_AT,openedAfterHypothesisFreeze:true,hypothesisFreezeVersion:HYPOTHESIS_FREEZE_VERSION,hypotheses:Object.keys(HYPOTHESIS_REGISTRY)};
+}
+
 async function refreshHomeTimeframe(interval){
   state.homeInterval=interval;
   localStorage.setItem("quant_home_timeframe",interval);
@@ -345,12 +375,41 @@ function qraExposureSnapshot(side,openedAt){
   const peers=state.paperTrades.filter(t=>t.status==="open"&&t.side===side&&Number(t.openedAt)<=Number(openedAt));
   return {sameDirectionOpen:peers.length,sameDirectionRiskCash:peers.reduce((s,t)=>s+Number(t.riskCash||0),0)};
 }
-async function buildQraLabSnapshot(side,openedAt){
-  const regime=await getQraBtcRegime(openedAt);
-  const blocked=side==="short"&&regime.state==="ALCISTA";
-  const exposure=qraExposureSnapshot(side,openedAt);
-  return {version:QRA_LAB_VERSION,evaluatedAt:Date.now(),sampleStartedAt:QRA_LAB_STARTED_AT,btcRegime:regime.state,btcClose:regime.close,btcAsOf:regime.asOf,rule:regime.rule,qra01Accepted:!blocked,qra01Reason:blocked?"SHORT bloqueado: BTC ALCISTA":"Aceptada por QRA-01",soloLongAccepted:side==="long",soloLongReason:side==="long"?"Aceptada: LONG":"Rechazada: estrategia Solo LONG",qra03Observation:exposure};
+function qra03VirtualDecision(exposure,riskCash,capital){
+  const cap=Math.max(1,Number(capital)||1),existing=Number(exposure?.sameDirectionRiskCash||0),existingPct=existing/cap*100;
+  let multiplier=1;
+  if(existingPct>=30) multiplier=0;
+  else if(existingPct>=20) multiplier=.25;
+  else if(existingPct>=10) multiplier=.5;
+  const virtualRiskCash=Number(riskCash||0)*multiplier;
+  return {version:QRA03_VIRTUAL_VERSION,mode:"research-only",policy:"<10%=1.00x; 10-<20%=0.50x; 20-<30%=0.25x; >=30%=0x",existingSameDirectionRiskPct:+existingPct.toFixed(4),multiplier,controlRiskCash:Number(riskCash||0),virtualRiskCash:+virtualRiskCash.toFixed(6),accepted:multiplier>0,reason:multiplier===0?"Bloqueo virtual por concentración >=30%":"Tamaño virtual según concentración"};
 }
+async function getBtcBenchmarkReference(atTime,interval){
+  try{
+    const raw=await api("/klines",{symbol:"BTCUSDT",interval:interval||"1h",endTime:Math.max(0,Number(atTime)-1),limit:2});
+    if(!raw.length) return {price:null,asOf:null};
+    const last=raw.at(-1); return {price:+last[4],asOf:+last[6]};
+  }catch(e){ console.warn("BTC benchmark",e); return {price:null,asOf:null}; }
+}
+async function buildQraLabSnapshot(side,openedAt,interval,riskCash,capital){
+  const [regime,btcRef]=await Promise.all([getQraBtcRegime(openedAt),getBtcBenchmarkReference(openedAt,interval)]);
+  const blocked=side==="short"&&regime.state==="ALCISTA",exposure=qraExposureSnapshot(side,openedAt);
+  const qra03Virtual=qra03VirtualDecision(exposure,riskCash,capital);
+  const marketBenchmark={version:MARKET_BENCHMARK_VERSION,asset:"BTC",side,interval:interval||null,entryPrice:btcRef.price,entryAsOf:btcRef.asOf,exitPrice:null,exitAsOf:null,directionalReturnPct:null,benchmarkR:null,excessR:null,status:btcRef.price?"tracking":"missing-entry"};
+  return {version:QRA_LAB_VERSION,evaluatedAt:Date.now(),sampleStartedAt:QRA_LAB_STARTED_AT,hypothesisFreezeVersion:HYPOTHESIS_FREEZE_VERSION,btcRegime:regime.state,btcClose:regime.close,btcAsOf:regime.asOf,rule:regime.rule,qra01Accepted:!blocked,qra01Reason:blocked?"SHORT bloqueado: BTC ALCISTA":"Aceptada por QRA-01",soloLongAccepted:side==="long",soloLongReason:side==="long"?"Aceptada: LONG":"Rechazada: estrategia Solo LONG",qra03Observation:exposure,qra03Virtual,marketBenchmark};
+}
+async function finalizeMarketBenchmark(t){
+  const b=t?.qraLab?.marketBenchmark;if(!b||b.status==="complete"||!t.closedAt)return;
+  const ref=await getBtcBenchmarkReference(Number(t.closedAt)+intervalMs(t.interval),t.interval);
+  if(!(b.entryPrice>0&&ref.price>0)){b.status="missing-exit";return;}
+  b.exitPrice=ref.price;b.exitAsOf=ref.asOf;
+  const raw=(ref.price/b.entryPrice-1)*100;
+  b.directionalReturnPct=+(t.side==="long"?raw:-raw).toFixed(6);
+  const stopPct=Math.abs(Number(t.entry)-Number(t.stop))/Math.max(1e-12,Number(t.entry))*100;
+  b.benchmarkR=stopPct>0?+(b.directionalReturnPct/stopPct).toFixed(6):null;
+  const actual=qraActualR(t);b.excessR=actual!=null&&b.benchmarkR!=null?+(actual-b.benchmarkR).toFixed(6):null;b.status="complete";
+}
+function qra03VirtualR(t){const actual=qraActualR(t),m=Number(t.qraLab?.qra03Virtual?.multiplier);return actual==null||!Number.isFinite(m)?null:actual*m;}
 function qraActualR(t){ return t.status!=="open"&&t.exit!=null?signedRFromPrice(t,t.exit):null; }
 function qraBranchR(t,key){ const b=t.exitComparison?.[key]; return b?.status==="closed"?Number(b.resultR||0):null; }
 function renderQraLabStats(){
@@ -371,6 +430,9 @@ function renderQraLabStats(){
   const trail=accepted.map(t=>qraBranchR(t,"trailing025")).filter(v=>v!==null);
   const ladderR=ladder.reduce((a,b)=>a+b,0),trailR=trail.reduce((a,b)=>a+b,0);
   const rejectedControlR=rejected.reduce((s,t)=>s+Number(qraActualR(t)||0),0);
+  const qra03Closed=closed.map(t=>qra03VirtualR(t)).filter(v=>v!==null),qra03R=qra03Closed.reduce((a,b)=>a+b,0);
+  const benchmarked=closed.filter(t=>t.qraLab?.marketBenchmark?.status==="complete"&&Number.isFinite(Number(t.qraLab.marketBenchmark.benchmarkR)));
+  const btcBenchR=benchmarked.reduce((s,t)=>s+Number(t.qraLab.marketBenchmark.benchmarkR||0),0),excessR=benchmarked.reduce((s,t)=>s+Number(t.qraLab.marketBenchmark.excessR||0),0);
   const maxPeers=Math.max(0,...lab.map(t=>Number(t.qraLab?.qra03Observation?.sameDirectionOpen||0)+1));
   const cards=[
     ["Muestra QRA",`${closed.length} cerradas · ${lab.filter(t=>t.status==="open").length} abiertas`],
@@ -380,6 +442,8 @@ function renderQraLabStats(){
     ["QRA-01 + Escalera",ladder.length?`${ladderR>=0?"+":""}${fmt(ladderR,2)}R · ${ladder.length} cerradas`:"Esperando"],
     ["QRA-01 + Trailing",trail.length?`${trailR>=0?"+":""}${fmt(trailR,2)}R · ${trail.length} cerradas`:"Esperando"],
     ["Rechazadas QRA-01",`${rejected.length} · control ${rejectedControlR>=0?"+":""}${fmt(rejectedControlR,2)}R`],
+    ["QRA-03 virtual",qra03Closed.length?`${qra03R>=0?"+":""}${fmt(qra03R,2)}R · ${qra03Closed.length} cerradas`:"Esperando"],
+    ["Benchmark BTC",benchmarked.length?`${btcBenchR>=0?"+":""}${fmt(btcBenchR,2)}R · exceso ${excessR>=0?"+":""}${fmt(excessR,2)}R`:"Esperando"],
     ["Máx. señales misma dirección",maxPeers],
     ["Inicio fuera de muestra",new Date(QRA_LAB_STARTED_AT).toLocaleString("es-MX")]
   ];
@@ -394,7 +458,7 @@ function renderQraLabTrades(){
     const actual=qraActualR(t), ladder=qraBranchR(t,"ladder"), trail=qraBranchR(t,"trailing025");
     const status=t.status==="open"?"ABIERTA":(actual!=null?`${actual>=0?"+":""}${fmt(actual,2)}R`:"CERRADA");
     const val=v=>v==null?"En seguimiento":`${v>=0?"+":""}${fmt(v,2)}R`;
-    return `<div class="result-card qra-trade-card"><span>${new Date(t.openedAt).toLocaleString("es-MX")} · ${t.interval||""}</span><strong>${t.symbol} · ${(t.side||"").toUpperCase()} · ${status}</strong><div class="qra-trade-lines"><div>CQ Control: <b>${status}</b></div><div>Solo LONG: <b>${(t.qraLab.soloLongAccepted ?? t.side==="long")?"ACEPTA":"RECHAZA"}</b></div><div>QRA-01: <b>${t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"}</b> · BTC ${t.qraLab.btcRegime}</div><div>QRA + Escalera: <b>${t.qraLab.qra01Accepted?val(ladder):"NO TOMADA"}</b></div><div>QRA + Trailing: <b>${t.qraLab.qra01Accepted?val(trail):"NO TOMADA"}</b></div><div>QRA-03: <b>${Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1}</b> señal(es) misma dirección</div></div></div>`;
+    return `<div class="result-card qra-trade-card"><span>${new Date(t.openedAt).toLocaleString("es-MX")} · ${t.interval||""}</span><strong>${t.symbol} · ${(t.side||"").toUpperCase()} · ${status}</strong><div class="qra-trade-lines"><div>CQ Control: <b>${status}</b></div><div>Solo LONG: <b>${(t.qraLab.soloLongAccepted ?? t.side==="long")?"ACEPTA":"RECHAZA"}</b></div><div>QRA-01: <b>${t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"}</b> · BTC ${t.qraLab.btcRegime}</div><div>QRA + Escalera: <b>${t.qraLab.qra01Accepted?val(ladder):"NO TOMADA"}</b></div><div>QRA + Trailing: <b>${t.qraLab.qra01Accepted?val(trail):"NO TOMADA"}</b></div><div>QRA-03 virtual: <b>${fmt(Number(t.qraLab.qra03Virtual?.multiplier??1)*100,0)}%</b> del riesgo · ${Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1} misma dirección</div><div>Benchmark BTC: <b>${t.qraLab.marketBenchmark?.status==="complete"?`${Number(t.qraLab.marketBenchmark.excessR)>=0?"+":""}${fmt(t.qraLab.marketBenchmark.excessR,2)}R exceso`:"En seguimiento"}</b></div></div></div>`;
   }).join("");
 }
 
@@ -434,8 +498,8 @@ async function scanAutoPaper(manual=false){
       if(rr<3)return row;
       const riskCash=a.capital*a.riskPct/100,qty=riskDist?riskCash/riskDist:0;
       const openedAt=(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1)+1;
-      const qraLab=await buildQraLabSnapshot(pick.side,openedAt);
-      state.paperTrades.unshift({id:Date.now()+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry,stop:lv.stop,target:lv.target,openedAt,status:"open",current:analysis.price,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*rewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:{longScore:analysis.longScore,shortScore:analysis.shortScore,rsi:analysis.rsi,adx:analysis.adx,atrPct:analysis.atrPct,volumeRatio:analysis.volumeRatio,trend:analysis.trend,ema20:analysis.e20.at(-2),ema50:analysis.e50.at(-2),ema200:analysis.e200.at(-2)},notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez`,auto:true,entryTimingFixed:true,monitorFrom:openedAt,closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qraLab});
+      const qraLab=await buildQraLabSnapshot(pick.side,openedAt,a.interval,riskCash,a.capital);
+      state.paperTrades.unshift({id:Date.now()+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry,stop:lv.stop,target:lv.target,openedAt,status:"open",current:analysis.price,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*rewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:buildResearchSnapshot(analysis,pick.side),researchMeta:buildResearchMeta(),notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez`,auto:true,entryTimingFixed:true,monitorFrom:openedAt,closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qraLab});
       a.lastSignals[key]=signalId;opened++; return row;
     }catch(e){console.warn("auto paper",sym,e);return null}
   });
@@ -755,10 +819,7 @@ $("#calcPositionBtn").onclick=()=>{
 
 
 function compactClosedCandleLogsForStorage(){
-  // candleLog (OHLCV bruto) y rPath contienen información parcialmente redundante.
-  // Para operaciones cerradas, rPath conserva el recorrido normalizado necesario para
-  // reproducir BE/trailing/escalera. Eliminamos el OHLCV bruto cerrado sólo cuando
-  // hace falta espacio, evitando que localStorage bloquee el seguimiento con QuotaExceededError.
+  // Primera capa: elimina OHLCV bruto de operaciones cerradas. rPath se conserva.
   const closed=state.paperTrades
     .filter(t=>t.status!=="open" && Array.isArray(t.candleLog) && t.candleLog.length)
     .sort((a,b)=>Number(a.closedAt||0)-Number(b.closedAt||0));
@@ -768,23 +829,66 @@ function compactClosedCandleLogsForStorage(){
     t.candleLogCompacted=true;
   }
 }
+function summarizeRPath(t){
+  const rows=Array.isArray(t.rPath)?t.rPath:[];
+  if(!rows.length) return t.rPathSummary||null;
+  let maxBest=-Infinity,minWorst=Infinity,lastCloseR=null,terminal="",firstAt=null,lastAt=null;
+  for(const r of rows){
+    if(!Array.isArray(r)) continue;
+    const ts=Number(r[0]); if(Number.isFinite(ts)){ if(firstAt==null) firstAt=ts; lastAt=ts; }
+    const best=Number(r[2]),worst=Number(r[3]),closeR=Number(r[4]);
+    if(Number.isFinite(best)) maxBest=Math.max(maxBest,best);
+    if(Number.isFinite(worst)) minWorst=Math.min(minWorst,worst);
+    if(Number.isFinite(closeR)) lastCloseR=closeR;
+    if(r[6]) terminal=String(r[6]);
+  }
+  return {
+    rows:rows.length,firstAt,lastAt,maxBestR:Number.isFinite(maxBest)?maxBest:null,minWorstR:Number.isFinite(minWorst)?minWorst:null,lastCloseR,terminal,
+    maxLevelR:Array.isArray(t.rLevelsHit)&&t.rLevelsHit.length?Math.max(...t.rLevelsHit.map(Number).filter(Number.isFinite)):0
+  };
+}
+function compactClosedRPathsForStorage(keepRecentFull=50){
+  // Segunda capa de emergencia: conserva completos los rPath de las últimas N cerradas
+  // y resume las cerradas más antiguas. NO cambia resultados, entradas ni comparadores.
+  const closedWithPath=state.paperTrades
+    .filter(t=>t.status!=="open" && Array.isArray(t.rPath) && t.rPath.length)
+    .sort((a,b)=>Number(b.closedAt||0)-Number(a.closedAt||0));
+  closedWithPath.slice(Math.max(0,keepRecentFull)).forEach(t=>{
+    t.rPathSummary=summarizeRPath(t);
+    t.rPathCount=Number(t.rPathCount||t.rPath.length||0);
+    t.rPath=[];
+    t.rPathCompacted=true;
+  });
+}
+function storagePayload(){ return JSON.stringify(state.paperTrades); }
 function savePaperState(){
-  let payload=JSON.stringify(state.paperTrades);
+  let payload=storagePayload();
   try{
     localStorage.setItem("quant_paper_trades",payload);
     return true;
   }catch(e){
     const quota=e?.name==="QuotaExceededError" || /quota/i.test(String(e?.message||e));
     if(!quota) throw e;
-    compactClosedCandleLogsForStorage();
-    payload=JSON.stringify(state.paperTrades);
-    try{
-      localStorage.setItem("quant_paper_trades",payload);
-      return true;
-    }catch(e2){
-      console.error("Centro Quant: almacenamiento local lleno incluso después de compactar",e2);
-      throw new Error("Almacenamiento local lleno. Centro Quant compactó las velas cerradas, pero aún falta espacio. Exporta un respaldo antes de continuar.");
-    }
+  }
+  // Capa 1: OHLC cerrado.
+  compactClosedCandleLogsForStorage();
+  payload=storagePayload();
+  try{
+    localStorage.setItem("quant_paper_trades",payload);
+    return true;
+  }catch(e){
+    const quota=e?.name==="QuotaExceededError" || /quota/i.test(String(e?.message||e));
+    if(!quota) throw e;
+  }
+  // Capa 2: rPath de cerradas antiguas. Conserva las 50 cerradas más recientes completas.
+  compactClosedRPathsForStorage(50);
+  payload=storagePayload();
+  try{
+    localStorage.setItem("quant_paper_trades",payload);
+    return true;
+  }catch(e2){
+    console.error("Centro Quant: almacenamiento local lleno incluso después de compactación de segundo nivel",e2);
+    throw new Error("Almacenamiento local lleno incluso después de compactar cerradas. Tu historial de operaciones sigue en memoria; exporta un respaldo y libera espacio antes de continuar.");
   }
 }
 function paperLevels(entry,side,stopMode,stopValue,targetMode,targetValue){
@@ -825,10 +929,10 @@ async function createPaperTrade(){
   const checklist={trend:$("#checkTrend").checked,signal:$("#checkSignal").checked,risk:$("#checkRisk").checked,noImpulse:$("#checkNoImpulse").checked};
   const completed=Object.values(checklist).filter(Boolean).length;
   if(completed<3&&!confirm(`Solo completaste ${completed} de 4 controles. ¿Guardar de todos modos?`)) return;
-  const qraLab=await buildQraLabSnapshot(side,now);
+  const qraLab=await buildQraLabSnapshot(side,now,int,riskCash,capital);
   state.paperTrades.unshift({id:now,symbol:sym,side,interval:int,entry,stop:lv.stop,target:lv.target,openedAt:now,status:"open",current:entry,score,capital,riskPct,riskCash,qty,potentialProfit,rr,checklist,
     scoreType:usePending&&pending.combo?"1D+4H":"timeframe",scoreDaily:usePending&&pending.combo?pending.combo.dailyScore:null,score4h:usePending&&pending.combo?pending.combo.entryScore:null,
-    snapshot:usePending?pending.snapshot:{longScore:a.longScore,shortScore:a.shortScore,rsi:a.rsi,adx:a.adx,atrPct:a.atrPct,volumeRatio:a.volumeRatio,trend:a.trend,ema20:a.e20.at(-2),ema50:a.e50.at(-2),ema200:a.e200.at(-2)},
+    snapshot:usePending?pending.snapshot:buildResearchSnapshot(a,side),researchMeta:buildResearchMeta(),
     notes:$("#paperNotes").value.trim(),closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qraLab});
   savePaperState();state.pendingPaperSignal=null;$("#paperNotes").value="";["checkTrend","checkSignal","checkRisk","checkNoImpulse"].forEach(id=>$("#"+id).checked=false);renderPaperTrades();alert("Prueba guardada. La app seguirá su resultado.");
 }
@@ -1042,7 +1146,7 @@ async function checkOnePaperTrade(t){
         if(stopHit&&targetHit){t.status="loss";t.exit=t.stop;t.closedAt=c.t}
         else if(stopHit){t.status="loss";t.exit=t.stop;t.closedAt=c.t}
         else if(targetHit){updateTradeMFE(t,c);t.status="win";t.exit=t.target;t.closedAt=c.t}
-        if(t.status!=="open") t.resultPct=tradeResultPct(t,t.exit);
+        if(t.status!=="open"){t.resultPct=tradeResultPct(t,t.exit);await finalizeMarketBenchmark(t);}
       }
       if(!needsPaperMonitoring(t)) break;
     }
@@ -1114,11 +1218,11 @@ document.addEventListener("visibilitychange",()=>{
 window.addEventListener("focus",()=>{
   if(state.paperTrades.some(needsPaperMonitoring)) updatePaperTrades();
 });
-function closePaperManual(id){
+async function closePaperManual(id){
   const t=state.paperTrades.find(x=>x.id===id);if(!t)return;
   const value=prompt("Precio de cierre manual",t.current||t.entry);if(value===null)return;
   const exit=+value;if(!(exit>0))return alert("Precio inválido.");
-  t.status="manual";t.exit=exit;t.closedAt=Date.now();t.resultPct=tradeResultPct(t,exit);savePaperState();renderPaperTrades();
+  t.status="manual";t.exit=exit;t.closedAt=Date.now();t.resultPct=tradeResultPct(t,exit);await finalizeMarketBenchmark(t);savePaperState();renderPaperTrades();
 }
 function deletePaper(id){if(confirm("¿Eliminar esta prueba del diario?")){state.paperTrades=state.paperTrades.filter(x=>x.id!==id);savePaperState();renderPaperTrades()}}
 function tradeCard(t){
@@ -1129,7 +1233,7 @@ function tradeCard(t){
   const pnlCash=(t.side==="long"?(current-t.entry):(t.entry-current))*(t.qty||0);
   const checklistDone=t.checklist?Object.values(t.checklist).filter(Boolean).length:0;
   return `<article class="paper-trade"><div class="paper-head"><div><h3>${t.symbol}/USDT · ${t.side.toUpperCase()}</h3><div class="paper-meta">${t.interval} · ${new Date(t.openedAt).toLocaleString("es-MX")}</div></div><strong class="${cls}">${status}</strong></div>
-  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Máx. avance (MFE)</span><strong>${t.mfeR>=0?"+"+fmt(t.mfeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Máx. retroceso (MAE)</span><strong>${t.maeR>=0?"-"+fmt(t.maeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Velas OHLC guardadas</span><strong>${Array.isArray(t.candleLog)?t.candleLog.length:0}${t.candleLogCompacted?` · compactadas (${Number(t.candleLogCount||0)} originales)`:t.candleLogTruncated?"+ (límite)":""}</strong></div><div class="paper-level"><span>Recorrido R</span><strong>${Array.isArray(t.rPath)?t.rPath.length:0} velas · máx. nivel ${Array.isArray(t.rLevelsHit)&&t.rLevelsHit.length?fmt(Math.max(...t.rLevelsHit),2)+"R":"0R"}${t.rPathTruncated?" + (límite)":""}</strong></div>${t.exitComparison?`<div class="paper-level"><span>Escalera</span><strong>${comparisonLabel(t.exitComparison.ladder)}</strong></div><div class="paper-level"><span>Trailing 0.25R</span><strong>${comparisonLabel(t.exitComparison.trailing025)}</strong></div>`:""}${t.qraLab?`<div class="paper-level"><span>QRA-01</span><strong>${t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"} · BTC ${t.qraLab.btcRegime}</strong></div><div class="paper-level"><span>Solo LONG</span><strong>${(t.qraLab.soloLongAccepted ?? (t.side==="long"))?"ACEPTA":"RECHAZA"}</strong></div><div class="paper-level"><span>QRA-03 observación</span><strong>${Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1} señal(es) misma dirección</strong></div>`:""}<div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
+  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Máx. avance (MFE)</span><strong>${t.mfeR>=0?"+"+fmt(t.mfeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Máx. retroceso (MAE)</span><strong>${t.maeR>=0?"-"+fmt(t.maeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Velas OHLC guardadas</span><strong>${Array.isArray(t.candleLog)?t.candleLog.length:0}${t.candleLogCompacted?` · compactadas (${Number(t.candleLogCount||0)} originales)`:t.candleLogTruncated?"+ (límite)":""}</strong></div><div class="paper-level"><span>Recorrido R</span><strong>${Array.isArray(t.rPath)?t.rPath.length:0}${t.rPathCompacted?` · compactado (${Number(t.rPathCount||t.rPathSummary?.rows||0)} originales)`:""} velas · máx. nivel ${Array.isArray(t.rLevelsHit)&&t.rLevelsHit.length?fmt(Math.max(...t.rLevelsHit),2)+"R":"0R"}${t.rPathTruncated?" + (límite)":""}</strong></div>${t.exitComparison?`<div class="paper-level"><span>Escalera</span><strong>${comparisonLabel(t.exitComparison.ladder)}</strong></div><div class="paper-level"><span>Trailing 0.25R</span><strong>${comparisonLabel(t.exitComparison.trailing025)}</strong></div>`:""}${t.qraLab?`<div class="paper-level"><span>QRA-01</span><strong>${t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"} · BTC ${t.qraLab.btcRegime}</strong></div><div class="paper-level"><span>Solo LONG</span><strong>${(t.qraLab.soloLongAccepted ?? (t.side==="long"))?"ACEPTA":"RECHAZA"}</strong></div><div class="paper-level"><span>QRA-03 virtual</span><strong>${fmt(Number(t.qraLab.qra03Virtual?.multiplier??1)*100,0)}% riesgo · ${Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1} misma dirección</strong></div><div class="paper-level"><span>Benchmark BTC</span><strong>${t.qraLab.marketBenchmark?.status==="complete"?`Exceso ${Number(t.qraLab.marketBenchmark.excessR)>=0?"+":""}${fmt(t.qraLab.marketBenchmark.excessR,2)}R`:"En seguimiento"}</strong></div>`:""}<div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
   <div class="paper-snapshot"><span class="tag">Control ${checklistDone}/4</span><span class="tag">RSI ${fmt(t.snapshot.rsi,1)}</span><span class="tag">ADX ${fmt(t.snapshot.adx,1)}</span><span class="tag">ATR ${fmt(t.snapshot.atrPct,2)}%</span><span class="tag">Vol ${fmt(t.snapshot.volumeRatio,2)}x</span><span class="tag">${t.snapshot.trend}</span></div>
   ${t.notes?`<p class="paper-note">${t.notes.replace(/</g,"&lt;")}</p>`:""}<div class="paper-actions">${t.status==="open"?`<button class="ghost" data-close-paper="${t.id}">Cerrar manual</button>`:"<span></span>"}<button class="danger" data-delete-paper="${t.id}">Eliminar</button></div></article>`;
 }
@@ -1296,7 +1400,7 @@ function exportPaperCSV(){
     actual_r:t.status!=="open"&&t.exit!=null?signedRFromPrice(t,t.exit):"",
     escalera_estado:t.exitComparison?.ladder?.status||"",escalera_r:t.exitComparison?.ladder?.resultR??"",
     trailing025_estado:t.exitComparison?.trailing025?.status||"",trailing025_r:t.exitComparison?.trailing025?.resultR??"",
-    qra_version:t.qraLab?.version||"",btc_regimen:t.qraLab?.btcRegime||"",qra01:t.qraLab?(t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"):"",qra01_motivo:t.qraLab?.qra01Reason||"",solo_long:t.qraLab?((t.qraLab.soloLongAccepted ?? (t.side==="long"))?"ACEPTA":"RECHAZA"):"",solo_long_motivo:t.qraLab?.soloLongReason||(t.qraLab?(t.side==="long"?"Aceptada: LONG":"Rechazada: estrategia Solo LONG"):""),qra03_misma_direccion:t.qraLab?(Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1):"",
+    qra_version:t.qraLab?.version||"",btc_regimen:t.qraLab?.btcRegime||"",qra01:t.qraLab?(t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"):"",qra01_motivo:t.qraLab?.qra01Reason||"",solo_long:t.qraLab?((t.qraLab.soloLongAccepted ?? (t.side==="long"))?"ACEPTA":"RECHAZA"):"",solo_long_motivo:t.qraLab?.soloLongReason||(t.qraLab?(t.side==="long"?"Aceptada: LONG":"Rechazada: estrategia Solo LONG"):""),qra03_misma_direccion:t.qraLab?(Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1):"",qra03_multiplicador:t.qraLab?.qra03Virtual?.multiplier??"",qra03_riesgo_virtual:t.qraLab?.qra03Virtual?.virtualRiskCash??"",btc_benchmark_r:t.qraLab?.marketBenchmark?.benchmarkR??"",btc_exceso_r:t.qraLab?.marketBenchmark?.excessR??"",hipotesis_version:t.qraLab?.hypothesisFreezeVersion||t.researchMeta?.hypothesisFreezeVersion||"",
     notas:(t.notes||"").replace(/\n/g," ")
   }));
   if(!rows.length)return alert("No hay operaciones para exportar.");
@@ -1320,7 +1424,7 @@ function createFullBackup(){
   }
   const backup={
     app:"Centro Quant",
-    version:"6.9.4",
+    version:APP_VERSION,
     format:1,
     createdAt:new Date().toISOString(),
     data
@@ -1354,7 +1458,7 @@ async function restoreFullBackup(file){
       localStorage.setItem(k,v);
     }
   }
-  alert("Respaldo cargado correctamente. Si era grande, Centro Quant compactó automáticamente OHLC de operaciones cerradas conservando su recorrido R. La aplicación se reiniciará.");
+  alert("Respaldo cargado correctamente. Si era grande, Centro Quant aplicó compactación segura por capas en operaciones cerradas. La aplicación se reiniciará.");
   location.reload();
 }
 

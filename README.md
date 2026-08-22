@@ -1,14 +1,24 @@
-# Centro Quant v6.9.4
+# Centro Quant v6.9.5
 
-Corrección de auditoría y almacenamiento sobre v6.9.2/v6.9.3.
+Infraestructura prospectiva sobre v6.9.4. No cambia las reglas de entrada/salida del control actual.
 
 ## Cambios
-- Corrige el error `The quota has been exceeded` compactando automáticamente el OHLC bruto de operaciones **cerradas** cuando localStorage llega a su límite. Se conserva `rPath`, MFE/MAE, niveles R y comparaciones de salida para el laboratorio.
+- Mantiene congelados Score mínimo 85, stop 3%, objetivo 9%, riesgo 1% y pesos 30/20/15/15/10/10.
+- Añade cohorte `ARONSON-QRA-2026-08-22-1` a nuevas operaciones, con versión de estrategia y fecha de congelación.
+- Guarda factores individuales del Score, puntos aportados y pesos usados al abrir cada nueva operación.
+- Añade compactación de segundo nivel: si tras retirar OHLC cerrado aún no cabe, resume `rPath` de cerradas antiguas y conserva completas las 50 cerradas más recientes.
+- Primera capa de cuota: compacta automáticamente el OHLC bruto de operaciones **cerradas** y conserva `rPath`, MFE/MAE, niveles R y comparaciones de salida. Si aun así no cabe, entra la segunda capa descrita arriba.
 - Cambia `Resultado acumulado` por métricas separadas: P&L simulado, retorno sobre capital base, resultado en R y movimiento acumulado (marcado como no-rentabilidad).
 - Muestra riesgo abierto agregado y alerta de exposición cuando supera 10% del capital base.
 - Muestra riesgo LONG/SHORT abierto por separado.
 - Cuenta velas ambiguas donde stop y target fueron tocados en la misma vela; se mantiene el criterio conservador de stop primero.
-- Los respaldos nuevos se identifican como v6.9.4 y la restauración de respaldos grandes aplica la compactación segura si hace falta.
+- Los respaldos nuevos se identifican como v6.9.5 y la restauración de respaldos grandes aplica la compactación segura si hace falta.
 
 ## Importante
-Antes de actualizar, conserva el respaldo JSON original. La compactación sólo elimina OHLC bruto redundante de operaciones ya cerradas cuando falta espacio; no borra operaciones ni su `rPath`.
+Antes de actualizar, conserva el respaldo JSON original. La compactación nunca borra operaciones, resultados, MFE/MAE, niveles R, QRA ni comparaciones de salida. Sólo en la segunda capa puede resumir `rPath` antiguo; por eso el respaldo previo sigue siendo el archivo histórico completo.
+
+## Laboratorio Aronson-QRA añadido antes del despliegue
+- QRA-03 virtual: no modifica las operaciones control. Registra un tamaño hipotético según concentración de riesgo de la misma dirección: <10% = 1.00x, 10-<20% = 0.50x, 20-<30% = 0.25x y >=30% = 0x. Esta regla queda sellada como `QRA03-VIRTUAL-1` para evaluación prospectiva.
+- Benchmark BTC virtual: guarda una referencia BTC causal (último cierre disponible del mismo timeframe antes de la entrada) y, al cerrar la operación, calcula retorno direccional BTC, R de benchmark y exceso de R de Centro Quant. No interviene en entradas ni salidas.
+- Sello formal de hipótesis: las nuevas operaciones guardan `ARONSON-HYPOTHESES-2026-08-22-1` y la lista de hipótesis congeladas para distinguir descubrimiento de validación prospectiva.
+- El CSV incluye multiplicador QRA-03, riesgo virtual, benchmark BTC, exceso R y versión de hipótesis.

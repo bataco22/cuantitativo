@@ -1,5 +1,5 @@
 
-// v6.9.5 · almacenamiento robusto + QRA-03 virtual + benchmark BTC + sello formal de hipótesis
+// v6.9.6 · backtest Mercado Aronson-QRA + v6.9.5 sin cambios de estrategia
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -1513,3 +1513,125 @@ $("#exportPaperBtn").onclick=exportPaperCSV;
 
 renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();renderPaperMonitor();renderScannerResults();syncAutoPaperControls();if($("#homeTimeframeSelect"))$("#homeTimeframeSelect").value=state.homeInterval;renderHome();refreshAll().then(async()=>{await refreshHomeTimeframe(state.homeInterval);await updatePaperTrades();await backfillPaperMFE();renderPaperTrades();await scanAutoPaper();});
 if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(console.warn);
+
+
+// --- v6.9.6: Backtest de mercado Aronson-QRA ---------------------------------
+// Investigación retrospectiva. NO sustituye la cohorte prospectiva. Usa el
+// Top 100 actual, por lo que existe sesgo de supervivencia. La entrada se hace
+// causalmente en la apertura de la vela siguiente a la señal cerrada.
+let lastMarketAronsonResult=null;
+function btIndicators(c){
+  const closes=c.map(x=>x.c),vols=c.map(x=>x.v);
+  return {closes,vols,e20:ema(closes,20),e50:ema(closes,50),e200:ema(closes,200),rs:rsi(closes),v20:sma(vols,20),at:atr(c),ax:adx(c)};
+}
+function btRegimeFromDaily(daily,atTime){
+  const prior=daily.filter(x=>Number(x.ct)<Number(atTime));
+  if(prior.length<4)return "DESCONOCIDO";
+  const last=prior.at(-1),prev=prior.slice(-4,-1).map(x=>x.c);
+  return last.c>Math.max(...prev)?"ALCISTA":last.c<Math.min(...prev)?"BAJISTA":"TRANSICIÓN";
+}
+function btNearestPriorClose(candles,atTime){
+  let lo=0,hi=candles.length-1,ans=null;
+  while(lo<=hi){const m=(lo+hi)>>1;if(Number(candles[m].ct)<Number(atTime)){ans=candles[m];lo=m+1}else hi=m-1;}
+  return ans;
+}
+function btNearestExitClose(candles,closeTime){
+  // Cierre de la vela de benchmark que contiene/termina tras el cierre de la operación.
+  for(const x of candles){if(Number(x.ct)>=Number(closeTime))return x;}
+  return candles.at(-1)||null;
+}
+function btVirtualStops(){return {ladder:{status:"open",stopR:-1,resultR:null,maxR:0},trail:{status:"open",stopR:-1,resultR:null,maxR:0}};}
+function btAdvanceBranch(branch,bestR,worstR,kind){
+  if(branch.status!=="open")return;
+  if(worstR<=branch.stopR+1e-9){branch.status="closed";branch.resultR=branch.stopR;return;}
+  branch.maxR=Math.max(branch.maxR,bestR);
+  const next=kind==="ladder"?ladderStopForMaxR(branch.maxR):trailing025StopForMaxR(branch.maxR);
+  branch.stopR=Math.max(branch.stopR,next);
+}
+function btSignedR(side,entry,stopDist,price){return (side==="long"?(price-entry):(entry-price))/stopDist;}
+function btSimTrade(symbol,side,score,c,i,feeRate){
+  if(i+1>=c.length)return null;
+  const entryBar=c[i+1],entry=Number(entryBar.o),stopPct=.03,targetPct=.09,stopDist=entry*stopPct;
+  const stop=side==="long"?entry*(1-stopPct):entry*(1+stopPct),target=side==="long"?entry*(1+targetPct):entry*(1-targetPct);
+  const virt=btVirtualStops(); let close=null,grossR=null,closeIndex=null;
+  for(let j=i+1;j<c.length;j++){
+    const bar=c[j],bestR=Math.max(btSignedR(side,entry,stopDist,bar.h),btSignedR(side,entry,stopDist,bar.l)),worstR=Math.min(btSignedR(side,entry,stopDist,bar.h),btSignedR(side,entry,stopDist,bar.l));
+    btAdvanceBranch(virt.ladder,bestR,worstR,"ladder"); btAdvanceBranch(virt.trail,bestR,worstR,"trail");
+    const stopHit=side==="long"?bar.l<=stop:bar.h>=stop,targetHit=side==="long"?bar.h>=target:bar.l<=target;
+    if(stopHit||targetHit){ // conservador: si ambos ocurren en la misma vela, stop primero
+      close=stopHit?stop:target;grossR=stopHit?-1:3;closeIndex=j;break;
+    }
+  }
+  if(close==null)return {symbol,side,score,openedAt:Number(entryBar.t),status:"open",entry};
+  // Seguir comparadores virtuales hasta que cierren o se acaben los datos.
+  if(virt.ladder.status==="open"||virt.trail.status==="open"){
+    for(let j=closeIndex+1;j<c.length;j++){
+      const bar=c[j],bestR=Math.max(btSignedR(side,entry,stopDist,bar.h),btSignedR(side,entry,stopDist,bar.l)),worstR=Math.min(btSignedR(side,entry,stopDist,bar.h),btSignedR(side,entry,stopDist,bar.l));
+      btAdvanceBranch(virt.ladder,bestR,worstR,"ladder");btAdvanceBranch(virt.trail,bestR,worstR,"trail");
+      if(virt.ladder.status!=="open"&&virt.trail.status!=="open")break;
+    }
+  }
+  const feeR=((entry+close)*feeRate)/stopDist,netR=grossR-feeR;
+  return {symbol,side,score,openedAt:Number(entryBar.t),closedAt:Number(c[closeIndex].t),entry,exit:close,grossR,netR,feeR,ladderR:virt.ladder.status==="closed"?virt.ladder.resultR:null,trailingR:virt.trail.status==="closed"?virt.trail.resultR:null};
+}
+function btMaxDrawdown(rows,key="netR",weightKey=null){
+  let eq=0,peak=0,dd=0; for(const t of [...rows].sort((a,b)=>a.closedAt-b.closedAt)){const w=weightKey?Number(t[weightKey]??1):1;eq+=Number(t[key]||0)*w;peak=Math.max(peak,eq);dd=Math.max(dd,peak-eq);} return dd;
+}
+function btSummary(rows,key="netR",weightKey=null){
+  const done=rows.filter(t=>t.status!=="open"&&Number.isFinite(Number(t[key]))),n=done.length;
+  const vals=done.map(t=>Number(t[key])* (weightKey?Number(t[weightKey]??1):1));
+  const total=vals.reduce((a,b)=>a+b,0),wins=vals.filter(v=>v>0).length;
+  return {n,total,exp:n?total/n:0,win:n?wins/n*100:0,dd:btMaxDrawdown(done,key,weightKey)};
+}
+function btFmtBranch(name,s){return `<div class="result-card"><span>${name}</span><strong>${s.total>=0?"+":""}${fmt(s.total,2)}R</strong><small>${s.n} cerradas · exp ${s.exp>=0?"+":""}${fmt(s.exp,3)}R · DD ${fmt(s.dd,2)}R</small></div>`;}
+async function runMarketAronsonBacktest(){
+  const btn=$("#runMarketAronsonBtn"),prog=$("#marketBtProgress"),out=$("#marketBtResults"),detail=$("#marketBtDetail");
+  btn.disabled=true;btn.textContent="Preparando mercado…";out.classList.add("hidden");detail.classList.add("hidden");
+  try{
+    const interval=$("#marketBtInterval")?.value||"1h",maxAssets=Number($("#marketBtMaxAssets")?.value||100),bars=Number($("#marketBtBars")?.value||1000),feeRate=Number($("#marketBtFee")?.value||.1)/100;
+    prog.textContent="Obteniendo Top 100 actual y BTC de referencia…";
+    const universe=(await getScannerUniverse()).slice(0,maxAssets),btcSame=await getCandles("BTC",interval,bars),btcDaily=await getCandles("BTC","1d",1000);
+    const all=[];let ok=0,failed=0;
+    const results=await mapWithConcurrency(universe,4,async(sym,idx)=>{
+      prog.textContent=`Descargando y simulando ${idx+1}/${universe.length}: ${sym}…`;
+      try{
+        const c=await getCandles(sym,interval,bars),ind=btIndicators(c),local=[];
+        let activeLongUntil=-1,activeShortUntil=-1;
+        for(let i=210;i<c.length-1;i++){
+          const sc=scoreAtIndex(c,i,ind);if(!sc)continue;
+          const opts=[];if(sc.longScore>=85)opts.push({side:"long",score:sc.longScore});if(sc.shortScore>=85)opts.push({side:"short",score:sc.shortScore});opts.sort((a,b)=>b.score-a.score);if(!opts.length)continue;
+          const pick=opts[0],openAt=Number(c[i+1].t),activeUntil=pick.side==="long"?activeLongUntil:activeShortUntil;if(activeUntil>=openAt)continue;
+          const t=btSimTrade(sym,pick.side,pick.score,c,i,feeRate);if(!t)continue;
+          t.btcRegime=btRegimeFromDaily(btcDaily,t.openedAt);t.qra01Accepted=!(t.side==="short"&&t.btcRegime==="ALCISTA");
+          if(t.status!=="open"){
+            const be=btNearestPriorClose(btcSame,t.openedAt),bx=btNearestExitClose(btcSame,t.closedAt);
+            if(be&&bx&&be.c>0){const raw=(bx.c/be.c-1)*100,dir=t.side==="long"?raw:-raw;t.benchmarkR=dir/3;t.excessR=t.netR-t.benchmarkR;}
+            if(t.ladderR!=null)t.ladderNetR=t.ladderR-((entryFee=>entryFee)(2*feeRate/.03));
+            if(t.trailingR!=null)t.trailingNetR=t.trailingR-(2*feeRate/.03);
+            if(pick.side==="long")activeLongUntil=t.closedAt;else activeShortUntil=t.closedAt;
+          }else{if(pick.side==="long")activeLongUntil=Number.MAX_SAFE_INTEGER;else activeShortUntil=Number.MAX_SAFE_INTEGER;}
+          local.push(t);
+        }
+        ok++;return local;
+      }catch(e){failed++;console.warn("market backtest",sym,e);return [];}
+    });
+    results.forEach(r=>all.push(...r));
+    // QRA-03: se calcula cronológicamente sobre las posiciones del control ya abiertas.
+    const sorted=[...all].filter(t=>t.status!=="open").sort((a,b)=>a.openedAt-b.openedAt);
+    const prior=[];for(const t of sorted){const same=prior.filter(p=>p.side===t.side&&p.closedAt>=t.openedAt);const existingRiskPct=same.length*1;let m=1;if(existingRiskPct>=30)m=0;else if(existingRiskPct>=20)m=.25;else if(existingRiskPct>=10)m=.5;t.qra03Multiplier=m;t.qra03NetR=t.netR*m;prior.push(t);}
+    const closed=sorted,qra01=closed.filter(t=>t.qra01Accepted),soloLong=closed.filter(t=>t.side==="long");
+    const controlS=btSummary(closed),longS=btSummary(soloLong),q1S=btSummary(qra01),q3S=btSummary(closed,"qra03NetR"),q13S=btSummary(closed.filter(t=>t.qra01Accepted),"qra03NetR");
+    const ladderRows=closed.filter(t=>t.ladderNetR!=null),trailRows=closed.filter(t=>t.trailingNetR!=null),ladS=btSummary(ladderRows,"ladderNetR"),trailS=btSummary(trailRows,"trailingNetR"),q1TrailS=btSummary(trailRows.filter(t=>t.qra01Accepted),"trailingNetR");
+    const bench=closed.filter(t=>Number.isFinite(t.benchmarkR)),benchR=bench.reduce((s,t)=>s+t.benchmarkR,0),excessR=bench.reduce((s,t)=>s+t.excessR,0);
+    const regimes={};for(const r of ["ALCISTA","TRANSICIÓN","BAJISTA","DESCONOCIDO"]){const z=closed.filter(t=>t.btcRegime===r);if(z.length)regimes[r]=btSummary(z);}
+    const clusters=new Map();closed.forEach(t=>{const k=t.openedAt;clusters.set(k,(clusters.get(k)||0)+1)});const maxCluster=Math.max(0,...clusters.values());
+    lastMarketAronsonResult={version:"CQ-MARKET-BT-ARONSON-1",createdAt:new Date().toISOString(),interval,bars,universeCount:universe.length,assetsOk:ok,assetsFailed:failed,assumptions:{top100:"Top 100 actual (sesgo de supervivencia)",threshold:85,stopPct:3,targetPct:9,riskPct:1,feePerSidePct:feeRate*100,entry:"apertura de vela siguiente",sameCandle:"stop antes de target",qra03:"<10%=1x;10-<20%=0.5x;20-<30%=0.25x;>=30%=0x"},summaries:{control:controlS,soloLong:longS,qra01:q1S,qra03:q3S,qra01_qra03:q13S,ladder:ladS,trailing025:trailS,qra01_trailing025:q1TrailS},benchmark:{n:bench.length,btcR:benchR,excessR,excessPerTrade:bench.length?excessR/bench.length:0},regimes,clusters:{count:clusters.size,maxSize:maxCluster},trades:closed};
+    out.innerHTML=btFmtBranch("Control neto",controlS)+btFmtBranch("Solo LONG",longS)+btFmtBranch("QRA-01",q1S)+btFmtBranch("QRA-03 virtual",q3S)+btFmtBranch("QRA-01 + QRA-03",q13S)+btFmtBranch("Escalera",ladS)+btFmtBranch("Trailing 0.25R",trailS)+btFmtBranch("QRA-01 + Trailing",q1TrailS)+`<div class="result-card"><span>Benchmark BTC</span><strong>${excessR>=0?"+":""}${fmt(excessR,2)}R exceso</strong><small>${bench.length} trades · BTC ${benchR>=0?"+":""}${fmt(benchR,2)}R</small></div>`;
+    out.classList.remove("hidden");
+    detail.innerHTML=`<h3>Lectura Aronson-QRA</h3><p><b>${universe.length}</b> activos del Top 100 actual · ${ok} procesados · ${failed} fallidos · ${closed.length} operaciones cerradas · ${clusters.size} clusters · máximo ${maxCluster} señales simultáneas.</p><p><b>Regímenes BTC:</b> ${Object.entries(regimes).map(([k,v])=>`${k}: ${v.n} trades, ${v.total>=0?"+":""}${fmt(v.total,1)}R`).join(" · ")||"sin datos"}.</p><p><b>Advertencia metodológica:</b> es investigación retrospectiva y usa el Top 100 actual, por lo que existe sesgo de supervivencia. La validación principal sigue siendo la cohorte prospectiva v6.9.5+.</p>`;detail.classList.remove("hidden");$("#exportMarketBtBtn").classList.remove("hidden");
+    prog.textContent=`Terminado · ${ok}/${universe.length} activos · ${closed.length} cerradas · control ${controlS.total>=0?"+":""}${fmt(controlS.total,2)}R netas.`;
+  }catch(e){console.error(e);prog.textContent="Error: "+e.message;alert("No fue posible completar el backtest de mercado: "+e.message);}finally{btn.disabled=false;btn.textContent="Ejecutar backtest de mercado";}
+}
+function exportMarketAronsonResult(){if(!lastMarketAronsonResult)return alert("Primero ejecuta el backtest de mercado.");const blob=new Blob([JSON.stringify(lastMarketAronsonResult,null,2)],{type:"application/json"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`centro-quant-backtest-aronson-${lastMarketAronsonResult.interval}-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
+setTimeout(()=>{const b=$("#runMarketAronsonBtn");if(b)b.onclick=runMarketAronsonBacktest;const e=$("#exportMarketBtBtn");if(e)e.onclick=exportMarketAronsonResult;},0);
+// -----------------------------------------------------------------------------

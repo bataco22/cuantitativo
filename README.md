@@ -1,3 +1,17 @@
+# Centro Quant v6.9.6
+
+Añade Backtest Mercado Aronson-QRA sobre la base v6.9.5. No cambia las reglas de trading en producción.
+
+## Nuevo laboratorio histórico
+- Top 100 actual con filtros de liquidez de Centro Quant.
+- Entrada causal en la apertura de la vela posterior a la señal cerrada.
+- Score >=85, stop 3%, objetivo 9%, riesgo 1% congelados.
+- Compara Control, Solo LONG, QRA-01, QRA-03 virtual, combinación QRA-01+QRA-03, Escalera, Trailing 0.25R y QRA-01+Trailing.
+- Incluye comisiones configurables y benchmark BTC.
+- Exporta JSON completo del experimento.
+
+**Limitación:** usa el Top 100 actual; por ello tiene sesgo de supervivencia. Es investigación retrospectiva, no sustituye la cohorte prospectiva Aronson-QRA.
+
 # Centro Quant v6.9.5
 
 Infraestructura prospectiva sobre v6.9.4. No cambia las reglas de entrada/salida del control actual.

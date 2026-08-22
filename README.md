@@ -1,4 +1,4 @@
-# Centro Quant v6.9.6
+# Centro Quant v6.9.7
 
 Añade Backtest Mercado Aronson-QRA sobre la base v6.9.5. No cambia las reglas de trading en producción.
 
@@ -36,3 +36,10 @@ Antes de actualizar, conserva el respaldo JSON original. La compactación nunca 
 - Benchmark BTC virtual: guarda una referencia BTC causal (último cierre disponible del mismo timeframe antes de la entrada) y, al cerrar la operación, calcula retorno direccional BTC, R de benchmark y exceso de R de Centro Quant. No interviene en entradas ni salidas.
 - Sello formal de hipótesis: las nuevas operaciones guardan `ARONSON-HYPOTHESES-2026-08-22-1` y la lista de hipótesis congeladas para distinguir descubrimiento de validación prospectiva.
 - El CSV incluye multiplicador QRA-03, riesgo virtual, benchmark BTC, exceso R y versión de hipótesis.
+
+
+## v6.9.7 · Sensibilidad trailing Aronson
+- El backtest de mercado calcula en una sola corrida trailing 0.20R, 0.25R, 0.30R, 0.40R y 0.50R sobre las mismas entradas.
+- Reporta total R, expectancy, drawdown, cobertura, LONG/SHORT y régimen BTC para cada paso.
+- Es sólo laboratorio retrospectivo; no modifica paper trading, señales, score, stop, target, pesos ni la cohorte prospectiva.
+- La meta es evaluar robustez/meseta, no escoger retrospectivamente el mejor parámetro.

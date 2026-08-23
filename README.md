@@ -111,3 +111,19 @@ Después importa `cq_point_in_time_public.json` en Laboratorio > Backtest Mercad
 - El modo histórico importado sólo se ejecuta en 1D, que es la temporalidad incluida en el dataset.
 - Exporta `pointInTimeAudit` con conteos de exclusiones/rechazos para auditar la corrida.
 - No cambia el motor operativo, Score, stop, target, riesgo ni la cohorte prospectiva QRA.
+
+
+## v6.10.6 · trailing intravela conservador
+
+Conserva el modo point-in-time estricto de v6.10.5 y cambia únicamente la
+simulación virtual de Escalera/Trailing del laboratorio.
+
+Si una vela diaria eleva el trailing por su extremo favorable y el extremo
+adverso de esa misma vela también cruza el nuevo stop, el backtest considera
+ejecutado ese nuevo stop dentro de la misma vela.
+
+El export identifica la metodología con:
+- CQ-MARKET-BT-ARONSON-6-POINT-IN-TIME-STRICT-INTRABAR
+- pointInTimeAudit.intrabarTrailingConservative = true
+
+No cambia Score, stop 3%, objetivo 9%, riesgo 1%, QRA ni el motor operativo.

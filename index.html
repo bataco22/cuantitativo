@@ -10,13 +10,13 @@
   <title>Centro de Trading Cuantitativo</title>
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
-  <link rel="stylesheet" href="./styles.css?v=6.9.8" />
+  <link rel="stylesheet" href="./styles.css?v=6.9.9" />
 </head>
 <body>
   <header class="app-header">
     <div>
       <p class="eyebrow">Uso personal · Datos públicos</p>
-      <div class="brand-line"><h1>Centro Quant</h1><span class="version-badge">v6.9.8</span></div>
+      <div class="brand-line"><h1>Centro Quant</h1><span class="version-badge">v6.9.9</span></div>
     </div>
     <button id="refreshAllBtn" class="icon-btn" aria-label="Actualizar">↻</button>
   </header>
@@ -261,15 +261,18 @@
 
 
       <article class="form-card" style="margin-top:18px">
-        <div class="paper-card-title"><span class="step-number">A</span><div><strong>Backtest Mercado Aronson-QRA</strong><small>Top 100 actual · ejecución causal · añade sensibilidad trailing 0.20–0.50R sin cambiar la estrategia productiva.</small></div></div>
+        <div class="paper-card-title"><span class="step-number">A</span><div><strong>Backtest Mercado Aronson-QRA</strong><small>Puede usar Top 100 actual o un universo histórico point-in-time importado. No cambia la estrategia productiva.</small></div></div>
         <div class="form-grid">
           <label>Temporalidad<select id="marketBtInterval"><option value="15m">15 minutos</option><option value="1h" selected>1 hora</option><option value="4h">4 horas</option><option value="1d">Diario</option></select></label>
           <label>Máx. activos<select id="marketBtMaxAssets"><option value="25">25</option><option value="50">50</option><option value="100" selected>100</option></select></label>
           <label>Velas por activo<select id="marketBtBars"><option value="500">500</option><option value="750">750</option><option value="1000" selected>1000</option></select></label>
           <label>Comisión por lado %<input id="marketBtFee" type="number" min="0" step="0.01" value="0.10" /></label>
+          <label>Universo<select id="marketBtUniverseMode"><option value="current">Top 100 actual</option><option value="historical">Histórico point-in-time importado</option></select></label>
+          <label class="full-field">Dataset histórico JSON<input id="marketBtUniverseFile" type="file" accept="application/json,.json" /></label>
         </div>
+        <div id="marketBtUniverseStatus" class="auto-summary">Sin dataset histórico cargado. Para eliminar sesgo de supervivencia, importa un JSON point-in-time.</div>
         <button id="runMarketAronsonBtn" class="primary wide">Ejecutar backtest de mercado</button>
-        <div id="marketBtProgress" class="auto-summary">Congelado: Score ≥85 · stop 3% · objetivo 9% · riesgo 1% · QRA-03 v1 · sensibilidad trailing 0.20/0.25/0.30/0.40/0.50R.</div>
+        <div id="marketBtProgress" class="auto-summary">Congelado: Score ≥85 · stop 3% · objetivo 9% · riesgo 1% · trailing 0.25R · cartera 10%/20%.</div>
       </article>
       <div id="marketBtResults" class="results-grid hidden"></div>
       <article id="marketBtDetail" class="insights-card hidden"></article>
@@ -461,8 +464,8 @@
     </form>
   </dialog>
 
-  <script src="./app.js?v=6.9.8"></script>
+  <script src="./app.js?v=6.9.9"></script>
 
-<div id="appVersionBadge" style="position:fixed;right:8px;bottom:8px;z-index:9999;font-size:10px;opacity:.45;pointer-events:none">v6.9.8</div>
+<div id="appVersionBadge" style="position:fixed;right:8px;bottom:8px;z-index:9999;font-size:10px;opacity:.45;pointer-events:none">v6.9.9</div>
 </body>
 </html>

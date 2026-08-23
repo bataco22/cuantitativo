@@ -1524,6 +1524,34 @@ function btIndicators(c){
   const closes=c.map(x=>x.c),vols=c.map(x=>x.v);
   return {closes,vols,e20:ema(closes,20),e50:ema(closes,50),e200:ema(closes,200),rs:rsi(closes),v20:sma(vols,20),at:atr(c),ax:adx(c)};
 }
+
+let historicalUniverseDataset=null;
+function normalizeHistoricalDataset(raw){
+  if(!raw||!Array.isArray(raw.snapshots)) throw new Error("El JSON debe contener snapshots[].");
+  const snapshots=raw.snapshots.map(x=>({date:String(x.date||x.asOf||"").slice(0,10),at:Number(x.at||Date.parse(String(x.date||x.asOf||"")+"T23:59:59Z")),assets:(x.assets||x.symbols||[]).map(a=>typeof a==="string"?{symbol:a.toUpperCase(),rank:null}:{symbol:String(a.symbol||"").toUpperCase(),rank:Number(a.rank||a.cmc_rank||0)||null,id:a.id??null}).filter(a=>a.symbol)})).filter(x=>Number.isFinite(x.at)&&x.assets.length).sort((a,b)=>a.at-b.at);
+  if(!snapshots.length) throw new Error("No hay snapshots válidos.");
+  const candles={};
+  if(raw.candles&&typeof raw.candles==="object") for(const [sym,rows] of Object.entries(raw.candles)){
+    candles[String(sym).toUpperCase()]=(rows||[]).map(r=>Array.isArray(r)?{t:+r[0],o:+r[1],h:+r[2],l:+r[3],c:+r[4],v:+(r[5]||0),ct:+(r[6]||r[0])}:{t:+r.t,o:+r.o,h:+r.h,l:+r.l,c:+r.c,v:+(r.v||0),ct:+(r.ct||r.t)}).filter(r=>Number.isFinite(r.t)&&Number.isFinite(r.c)).sort((a,b)=>a.t-b.t);
+  }
+  return {version:raw.version||"CQ-HIST-UNIVERSE-1",source:raw.source||"importado",snapshots,candles,meta:raw.meta||{}};
+}
+function histSnapshotForTime(at){
+  if(!historicalUniverseDataset?.snapshots?.length)return null;
+  let ans=null;for(const s of historicalUniverseDataset.snapshots){if(s.at<=at)ans=s;else break;}return ans||historicalUniverseDataset.snapshots[0];
+}
+function histEligible(symbol,at,maxRank=100){
+  const snap=histSnapshotForTime(at);if(!snap)return false;
+  const a=snap.assets.find(x=>x.symbol===String(symbol).toUpperCase());return !!a && (!a.rank||a.rank<=maxRank) && !STABLE_ASSETS.has(a.symbol);
+}
+function histUnionSymbols(maxRank=100){
+  if(!historicalUniverseDataset)return [];const set=new Set();for(const s of historicalUniverseDataset.snapshots)for(const a of s.assets)if((!a.rank||a.rank<=maxRank)&&!STABLE_ASSETS.has(a.symbol))set.add(a.symbol);return [...set];
+}
+async function loadHistoricalUniverseFile(file){
+  const raw=JSON.parse(await file.text());historicalUniverseDataset=normalizeHistoricalDataset(raw);
+  const unique=histUnionSymbols(100),withCandles=unique.filter(s=>(historicalUniverseDataset.candles[s]||[]).length>=220).length;
+  const el=$("#marketBtUniverseStatus");if(el)el.textContent=`Dataset ${historicalUniverseDataset.version}: ${historicalUniverseDataset.snapshots.length} snapshots · ${unique.length} símbolos · ${withCandles} con velas incluidas.`;
+}
 function btRegimeFromDaily(daily,atTime){
   const prior=daily.filter(x=>Number(x.ct)<Number(atTime));
   if(prior.length<4)return "DESCONOCIDO";
@@ -1638,15 +1666,23 @@ async function runMarketAronsonBacktest(){
   btn.disabled=true;btn.textContent="Preparando mercado…";out.classList.add("hidden");detail.classList.add("hidden");
   try{
     const interval=$("#marketBtInterval")?.value||"1h",maxAssets=Number($("#marketBtMaxAssets")?.value||100),bars=Number($("#marketBtBars")?.value||1000),feeRate=Number($("#marketBtFee")?.value||.1)/100;
-    prog.textContent="Obteniendo Top 100 actual y BTC de referencia…";
-    const universe=(await getScannerUniverse()).slice(0,maxAssets),btcSame=await getCandles("BTC",interval,bars),btcDaily=await getCandles("BTC","1d",1000);
+    const universeMode=$("#marketBtUniverseMode")?.value||"current";
+    if(universeMode==="historical"&&!historicalUniverseDataset) throw new Error("Seleccionaste universo histórico, pero no has cargado el JSON point-in-time.");
+    prog.textContent=universeMode==="historical"?"Preparando universo histórico point-in-time y BTC…":"Obteniendo Top 100 actual y BTC de referencia…";
+    const universe=(universeMode==="historical"?histUnionSymbols(maxAssets):(await getScannerUniverse()).slice(0,maxAssets));
+    const histBTC=historicalUniverseDataset?.candles?.BTC;
+    const btcSame=(universeMode==="historical"&&interval==="1d"&&histBTC?.length?histBTC.slice(-bars):await getCandles("BTC",interval,bars));
+    const btcDaily=(universeMode==="historical"&&histBTC?.length?histBTC.slice(-1000):await getCandles("BTC","1d",1000));
     const all=[];let ok=0,failed=0;
     const results=await mapWithConcurrency(universe,4,async(sym,idx)=>{
       prog.textContent=`Descargando y simulando ${idx+1}/${universe.length}: ${sym}…`;
       try{
-        const c=await getCandles(sym,interval,bars),ind=btIndicators(c),local=[];
+        const imported=historicalUniverseDataset?.candles?.[sym];
+        const c=(universeMode==="historical"&&interval==="1d"&&imported?.length?imported.slice(-bars):await getCandles(sym,interval,bars)),ind=btIndicators(c),local=[];
         let activeLongUntil=-1,activeShortUntil=-1;
         for(let i=210;i<c.length-1;i++){
+          const signalAt=Number(c[i].ct||c[i].t);
+          if(universeMode==="historical"&&!histEligible(sym,signalAt,maxAssets))continue;
           const sc=scoreAtIndex(c,i,ind);if(!sc)continue;
           const opts=[];if(sc.longScore>=85)opts.push({side:"long",score:sc.longScore});if(sc.shortScore>=85)opts.push({side:"short",score:sc.shortScore});opts.sort((a,b)=>b.score-a.score);if(!opts.length)continue;
           const pick=opts[0],openAt=Number(c[i+1].t),activeUntil=pick.side==="long"?activeLongUntil:activeShortUntil;if(activeUntil>=openAt)continue;
@@ -1685,13 +1721,13 @@ async function runMarketAronsonBacktest(){
     const bench=closed.filter(t=>Number.isFinite(t.benchmarkR)),benchR=bench.reduce((s,t)=>s+t.benchmarkR,0),excessR=bench.reduce((s,t)=>s+t.excessR,0);
     const regimes={};for(const r of ["ALCISTA","TRANSICIÓN","BAJISTA","DESCONOCIDO"]){const z=closed.filter(t=>t.btcRegime===r);if(z.length)regimes[r]=btSummary(z);}
     const clusters=new Map();closed.forEach(t=>{const k=t.openedAt;clusters.set(k,(clusters.get(k)||0)+1)});const maxCluster=Math.max(0,...clusters.values());
-    lastMarketAronsonResult={version:"CQ-MARKET-BT-ARONSON-3-PORTFOLIO",createdAt:new Date().toISOString(),interval,bars,universeCount:universe.length,assetsOk:ok,assetsFailed:failed,assumptions:{top100:"Top 100 actual (sesgo de supervivencia)",threshold:85,stopPct:3,targetPct:9,riskPct:1,feePerSidePct:feeRate*100,entry:"apertura de vela siguiente",sameCandle:"stop antes de target",qra03:"<10%=1x;10-<20%=0.5x;20-<30%=0.25x;>=30%=0x",trailingSensitivitySteps:BT_TRAILING_SENSITIVITY_STEPS,portfolioTrailingStep:"0.25",portfolioPriority:"score desc, symbol asc within same timestamp",portfolioCapsPct:[10,20]},summaries:{control:controlS,soloLong:longS,qra01:q1S,qra03:q3S,qra01_qra03:q13S,ladder:ladS,trailing025:trailS,qra01_trailing025:q1TrailS},trailingSensitivity,trailingPortfolio,benchmark:{n:bench.length,btcR:benchR,excessR,excessPerTrade:bench.length?excessR/bench.length:0},regimes,clusters:{count:clusters.size,maxSize:maxCluster},trades:closed};
+    lastMarketAronsonResult={version:universeMode==="historical"?"CQ-MARKET-BT-ARONSON-4-POINT-IN-TIME":"CQ-MARKET-BT-ARONSON-3-PORTFOLIO",createdAt:new Date().toISOString(),interval,bars,universeCount:universe.length,assetsOk:ok,assetsFailed:failed,assumptions:{top100:universeMode==="historical"?"Top histórico point-in-time importado":"Top 100 actual (sesgo de supervivencia)",historicalDataset:universeMode==="historical"?{version:historicalUniverseDataset.version,source:historicalUniverseDataset.source,snapshots:historicalUniverseDataset.snapshots.length}:null,threshold:85,stopPct:3,targetPct:9,riskPct:1,feePerSidePct:feeRate*100,entry:"apertura de vela siguiente",sameCandle:"stop antes de target",qra03:"<10%=1x;10-<20%=0.5x;20-<30%=0.25x;>=30%=0x",trailingSensitivitySteps:BT_TRAILING_SENSITIVITY_STEPS,portfolioTrailingStep:"0.25",portfolioPriority:"score desc, symbol asc within same timestamp",portfolioCapsPct:[10,20]},summaries:{control:controlS,soloLong:longS,qra01:q1S,qra03:q3S,qra01_qra03:q13S,ladder:ladS,trailing025:trailS,qra01_trailing025:q1TrailS},trailingSensitivity,trailingPortfolio,benchmark:{n:bench.length,btcR:benchR,excessR,excessPerTrade:bench.length?excessR/bench.length:0},regimes,clusters:{count:clusters.size,maxSize:maxCluster},trades:closed};
     out.innerHTML=btFmtBranch("Control neto",controlS)+btFmtBranch("Solo LONG",longS)+btFmtBranch("QRA-01",q1S)+btFmtBranch("QRA-03 virtual",q3S)+btFmtBranch("QRA-01 + QRA-03",q13S)+btFmtBranch("Escalera",ladS)+btFmtBranch("Trailing 0.25R",trailS)+btFmtBranch("QRA-01 + Trailing",q1TrailS)+Object.entries(trailingSensitivity).map(([k,v])=>btFmtBranch(`Sensibilidad trailing ${k}R`,v)).join("")+btFmtPortfolio("Cartera 0.25R · sin límite",trailingPortfolio.unlimited)+btFmtPortfolio("Cartera 0.25R · límite 10%",trailingPortfolio.cap10)+btFmtPortfolio("Cartera 0.25R · límite 20%",trailingPortfolio.cap20)+`<div class="result-card"><span>Benchmark BTC</span><strong>${excessR>=0?"+":""}${fmt(excessR,2)}R exceso</strong><small>${bench.length} trades · BTC ${benchR>=0?"+":""}${fmt(benchR,2)}R</small></div>`;
     out.classList.remove("hidden");
-    detail.innerHTML=`<h3>Lectura Aronson-QRA</h3><p><b>${universe.length}</b> activos del Top 100 actual · ${ok} procesados · ${failed} fallidos · ${closed.length} operaciones cerradas · ${clusters.size} clusters · máximo ${maxCluster} señales simultáneas.</p><p><b>Sensibilidad trailing:</b> ${Object.entries(trailingSensitivity).map(([k,v])=>`${k}R: ${v.total>=0?"+":""}${fmt(v.total,1)}R · exp ${v.exp>=0?"+":""}${fmt(v.exp,3)} · DD ${fmt(v.dd,1)}R`).join(" · ")}.</p><p><b>Cartera 0.25R:</b> sin límite ${trailingPortfolio.unlimited.total>=0?"+":""}${fmt(trailingPortfolio.unlimited.total,1)}R · límite 10% ${trailingPortfolio.cap10.total>=0?"+":""}${fmt(trailingPortfolio.cap10.total,1)}R, ${trailingPortfolio.cap10.accepted}/${trailingPortfolio.cap10.signals} señales, DD realizado ${fmt(trailingPortfolio.cap10.dd,1)}R · límite 20% ${trailingPortfolio.cap20.total>=0?"+":""}${fmt(trailingPortfolio.cap20.total,1)}R, ${trailingPortfolio.cap20.accepted}/${trailingPortfolio.cap20.signals} señales, DD realizado ${fmt(trailingPortfolio.cap20.dd,1)}R. Prioridad cuando coinciden señales: score mayor y luego símbolo.</p><p><b>Regímenes BTC:</b> ${Object.entries(regimes).map(([k,v])=>`${k}: ${v.n} trades, ${v.total>=0?"+":""}${fmt(v.total,1)}R`).join(" · ")||"sin datos"}.</p><p><b>Advertencia metodológica:</b> es investigación retrospectiva y usa el Top 100 actual, por lo que existe sesgo de supervivencia. La sensibilidad busca una meseta robusta, no el mejor punto. La validación principal sigue siendo la cohorte prospectiva v6.9.5+.</p>`;detail.classList.remove("hidden");$("#exportMarketBtBtn").classList.remove("hidden");
+    detail.innerHTML=`<h3>Lectura Aronson-QRA</h3><p><b>${universe.length}</b> activos del ${universeMode==="historical"?"universo histórico point-in-time":"Top 100 actual"} · ${ok} procesados · ${failed} fallidos · ${closed.length} operaciones cerradas · ${clusters.size} clusters · máximo ${maxCluster} señales simultáneas.</p><p><b>Sensibilidad trailing:</b> ${Object.entries(trailingSensitivity).map(([k,v])=>`${k}R: ${v.total>=0?"+":""}${fmt(v.total,1)}R · exp ${v.exp>=0?"+":""}${fmt(v.exp,3)} · DD ${fmt(v.dd,1)}R`).join(" · ")}.</p><p><b>Cartera 0.25R:</b> sin límite ${trailingPortfolio.unlimited.total>=0?"+":""}${fmt(trailingPortfolio.unlimited.total,1)}R · límite 10% ${trailingPortfolio.cap10.total>=0?"+":""}${fmt(trailingPortfolio.cap10.total,1)}R, ${trailingPortfolio.cap10.accepted}/${trailingPortfolio.cap10.signals} señales, DD realizado ${fmt(trailingPortfolio.cap10.dd,1)}R · límite 20% ${trailingPortfolio.cap20.total>=0?"+":""}${fmt(trailingPortfolio.cap20.total,1)}R, ${trailingPortfolio.cap20.accepted}/${trailingPortfolio.cap20.signals} señales, DD realizado ${fmt(trailingPortfolio.cap20.dd,1)}R. Prioridad cuando coinciden señales: score mayor y luego símbolo.</p><p><b>Regímenes BTC:</b> ${Object.entries(regimes).map(([k,v])=>`${k}: ${v.n} trades, ${v.total>=0?"+":""}${fmt(v.total,1)}R`).join(" · ")||"sin datos"}.</p><p><b>Advertencia metodológica:</b> es investigación retrospectiva. ${universeMode==="historical"?"El universo se filtra point-in-time según el dataset importado; revisa cobertura de velas/fallos para detectar sesgo residual.":"Usa el Top 100 actual, por lo que existe sesgo de supervivencia."} La sensibilidad busca una meseta robusta, no el mejor punto. La validación principal sigue siendo la cohorte prospectiva v6.9.5+.</p>`;detail.classList.remove("hidden");$("#exportMarketBtBtn").classList.remove("hidden");
     prog.textContent=`Terminado · ${ok}/${universe.length} activos · ${closed.length} cerradas · control ${controlS.total>=0?"+":""}${fmt(controlS.total,2)}R netas.`;
   }catch(e){console.error(e);prog.textContent="Error: "+e.message;alert("No fue posible completar el backtest de mercado: "+e.message);}finally{btn.disabled=false;btn.textContent="Ejecutar backtest de mercado";}
 }
 function exportMarketAronsonResult(){if(!lastMarketAronsonResult)return alert("Primero ejecuta el backtest de mercado.");const blob=new Blob([JSON.stringify(lastMarketAronsonResult,null,2)],{type:"application/json"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`centro-quant-backtest-aronson-${lastMarketAronsonResult.interval}-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
-setTimeout(()=>{const b=$("#runMarketAronsonBtn");if(b)b.onclick=runMarketAronsonBacktest;const e=$("#exportMarketBtBtn");if(e)e.onclick=exportMarketAronsonResult;},0);
+setTimeout(()=>{const b=$("#runMarketAronsonBtn");if(b)b.onclick=runMarketAronsonBacktest;const e=$("#exportMarketBtBtn");if(e)e.onclick=exportMarketAronsonResult;const f=$("#marketBtUniverseFile");if(f)f.onchange=async()=>{try{if(f.files?.[0])await loadHistoricalUniverseFile(f.files[0]);}catch(err){historicalUniverseDataset=null;const st=$("#marketBtUniverseStatus");if(st)st.textContent="Dataset inválido: "+err.message;}};},0);
 // -----------------------------------------------------------------------------

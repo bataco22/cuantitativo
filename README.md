@@ -58,3 +58,9 @@ Antes de actualizar, conserva el respaldo JSON original. La compactación nunca 
 - Reporta total R, expectancy, drawdown, cobertura, LONG/SHORT y régimen BTC para cada paso.
 - Es sólo laboratorio retrospectivo; no modifica paper trading, señales, score, stop, target, pesos ni la cohorte prospectiva.
 - La meta es evaluar robustez/meseta, no escoger retrospectivamente el mejor parámetro.
+
+## v6.9.9 · Universo histórico point-in-time
+- El laboratorio puede importar un JSON de rankings históricos y velas para filtrar cada señal por el Top N que existía en esa fecha.
+- No modifica el paper trading ni la cohorte prospectiva.
+- Incluye `build_point_in_time_dataset.py`: usa el endpoint oficial `listings/historical` de CoinMarketCap mediante `CMC_API_KEY` y Binance Vision para velas 1D archivadas.
+- El resultado exportado marca si se usó universo actual o histórico y cuántos snapshots contenía el dataset.

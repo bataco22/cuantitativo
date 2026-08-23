@@ -1,5 +1,5 @@
 
-// v6.10.4 · tres cohortes fijas: QRA histórico, OOS Aronson congelada y QRA-03 caps · sin cambios de estrategia
+// v6.10.5 · backtest point-in-time estricto: sin fallback, timestamps normalizados y pertenencia mensual causal
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -25,7 +25,7 @@ const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS",
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const QRA_LAB_VERSION = "QRA-OOS-1";
-const APP_VERSION = "6.10.4";
+const APP_VERSION = "6.10.5";
 const RESEARCH_GENERATION = "ARONSON-QRA-2026-08-22-1";
 const HYPOTHESIS_FREEZE_VERSION = "ARONSON-HYPOTHESES-2026-08-22-1";
 const QRA03_VIRTUAL_VERSION = "QRA03-VIRTUAL-1";
@@ -1650,19 +1650,29 @@ function btIndicators(c){
 }
 
 let historicalUniverseDataset=null;
+function histUnixMs(v){
+  let n=Number(v); if(!Number.isFinite(n))return NaN;
+  // Binance Vision usa microsegundos en spot desde 2025. Normalizamos todo a ms.
+  while(n>1e14)n/=1000;
+  return Math.round(n);
+}
 function normalizeHistoricalDataset(raw){
   if(!raw||!Array.isArray(raw.snapshots)) throw new Error("El JSON debe contener snapshots[].");
-  const snapshots=raw.snapshots.map(x=>({date:String(x.date||x.asOf||"").slice(0,10),at:Number(x.at||Date.parse(String(x.date||x.asOf||"")+"T23:59:59Z")),assets:(x.assets||x.symbols||[]).map(a=>typeof a==="string"?{symbol:a.toUpperCase(),rank:null}:{symbol:String(a.symbol||"").toUpperCase(),rank:Number(a.rank||a.cmc_rank||0)||null,id:a.id??null}).filter(a=>a.symbol)})).filter(x=>Number.isFinite(x.at)&&x.assets.length).sort((a,b)=>a.at-b.at);
+  const snapshots=raw.snapshots.map(x=>({date:String(x.date||x.asOf||"").slice(0,10),at:histUnixMs(x.at||Date.parse(String(x.date||x.asOf||"")+"T23:59:59Z")),assets:(x.assets||x.symbols||[]).map(a=>typeof a==="string"?{symbol:a.toUpperCase(),rank:null}:{symbol:String(a.symbol||"").toUpperCase(),rank:Number(a.rank||a.cmc_rank||0)||null,id:a.id??null}).filter(a=>a.symbol)})).filter(x=>Number.isFinite(x.at)&&x.assets.length).sort((a,b)=>a.at-b.at);
   if(!snapshots.length) throw new Error("No hay snapshots válidos.");
   const candles={};
   if(raw.candles&&typeof raw.candles==="object") for(const [sym,rows] of Object.entries(raw.candles)){
-    candles[String(sym).toUpperCase()]=(rows||[]).map(r=>Array.isArray(r)?{t:+r[0],o:+r[1],h:+r[2],l:+r[3],c:+r[4],v:+(r[5]||0),ct:+(r[6]||r[0])}:{t:+r.t,o:+r.o,h:+r.h,l:+r.l,c:+r.c,v:+(r.v||0),ct:+(r.ct||r.t)}).filter(r=>Number.isFinite(r.t)&&Number.isFinite(r.c)).sort((a,b)=>a.t-b.t);
+    candles[String(sym).toUpperCase()]=(rows||[]).map(r=>{const z=Array.isArray(r)?{t:histUnixMs(r[0]),o:+r[1],h:+r[2],l:+r[3],c:+r[4],v:+(r[5]||0),ct:histUnixMs(r[6]||r[0])}:{t:histUnixMs(r.t),o:+r.o,h:+r.h,l:+r.l,c:+r.c,v:+(r.v||0),ct:histUnixMs(r.ct||r.t)};return z;}).filter(r=>Number.isFinite(r.t)&&Number.isFinite(r.c)).sort((a,b)=>a.t-b.t);
   }
-  return {version:raw.version||"CQ-HIST-UNIVERSE-1",source:raw.source||"importado",snapshots,candles,meta:raw.meta||{}};
+  return {version:raw.version||"CQ-HIST-UNIVERSE-1",source:raw.source||"importado",snapshots,candles,meta:raw.meta||{},firstSnapshotAt:snapshots[0].at,lastSnapshotAt:snapshots.at(-1).at};
 }
 function histSnapshotForTime(at){
   if(!historicalUniverseDataset?.snapshots?.length)return null;
-  let ans=null;for(const s of historicalUniverseDataset.snapshots){if(s.at<=at)ans=s;else break;}return ans||historicalUniverseDataset.snapshots[0];
+  at=histUnixMs(at);
+  const snaps=historicalUniverseDataset.snapshots;
+  // Antes del primer snapshot no existe información point-in-time válida: nunca imputar el primer universo hacia atrás.
+  if(!Number.isFinite(at)||at<snaps[0].at)return null;
+  let ans=null;for(const s of snaps){if(s.at<=at)ans=s;else break;}return ans;
 }
 function histEligible(symbol,at,maxRank=100){
   const snap=histSnapshotForTime(at);if(!snap)return false;
@@ -1792,21 +1802,28 @@ async function runMarketAronsonBacktest(){
     const interval=$("#marketBtInterval")?.value||"1h",maxAssets=Number($("#marketBtMaxAssets")?.value||100),bars=Number($("#marketBtBars")?.value||1000),feeRate=Number($("#marketBtFee")?.value||.1)/100;
     const universeMode=$("#marketBtUniverseMode")?.value||"current";
     if(universeMode==="historical"&&!historicalUniverseDataset) throw new Error("Seleccionaste universo histórico, pero no has cargado el JSON point-in-time.");
-    prog.textContent=universeMode==="historical"?"Preparando universo histórico point-in-time y BTC…":"Obteniendo Top 100 actual y BTC de referencia…";
+    if(universeMode==="historical"&&interval!=="1d") throw new Error("El dataset point-in-time importado contiene velas 1D; usa temporalidad Diario.");
+    prog.textContent=universeMode==="historical"?"Preparando universo histórico point-in-time estricto y BTC…":"Obteniendo Top 100 actual y BTC de referencia…";
     const universe=(universeMode==="historical"?histUnionSymbols(maxAssets):(await getScannerUniverse()).slice(0,maxAssets));
     const histBTC=historicalUniverseDataset?.candles?.BTC;
-    const btcSame=(universeMode==="historical"&&interval==="1d"&&histBTC?.length?histBTC.slice(-bars):await getCandles("BTC",interval,bars));
-    const btcDaily=(universeMode==="historical"&&histBTC?.length?histBTC.slice(-1000):await getCandles("BTC","1d",1000));
-    const all=[];let ok=0,failed=0;
+    if(universeMode==="historical"&&(!histBTC||histBTC.length<220)) throw new Error("El dataset histórico no contiene suficientes velas BTC 1D; no se permite fallback a datos actuales.");
+    const btcSame=(universeMode==="historical"?histBTC.slice(-bars):await getCandles("BTC",interval,bars));
+    const btcDaily=(universeMode==="historical"?histBTC.slice(-1000):await getCandles("BTC","1d",1000));
+    const all=[];let ok=0,failed=0,excludedNoImported=0,rejectedBeforeFirstSnapshot=0,rejectedNotInSnapshot=0;
     const results=await mapWithConcurrency(universe,4,async(sym,idx)=>{
       prog.textContent=`Descargando y simulando ${idx+1}/${universe.length}: ${sym}…`;
       try{
         const imported=historicalUniverseDataset?.candles?.[sym];
-        const c=(universeMode==="historical"&&interval==="1d"&&imported?.length?imported.slice(-bars):await getCandles(sym,interval,bars)),ind=btIndicators(c),local=[];
+        if(universeMode==="historical"&&(!imported||imported.length<220)){excludedNoImported++;failed++;return [];}
+        const c=(universeMode==="historical"?imported.slice(-bars):await getCandles(sym,interval,bars)),ind=btIndicators(c),local=[];
         let activeLongUntil=-1,activeShortUntil=-1;
         for(let i=210;i<c.length-1;i++){
-          const signalAt=Number(c[i].ct||c[i].t);
-          if(universeMode==="historical"&&!histEligible(sym,signalAt,maxAssets))continue;
+          const signalAt=histUnixMs(c[i].ct||c[i].t);
+          if(universeMode==="historical"){
+            const snap=histSnapshotForTime(signalAt);
+            if(!snap){rejectedBeforeFirstSnapshot++;continue;}
+            if(!histEligible(sym,signalAt,maxAssets)){rejectedNotInSnapshot++;continue;}
+          }
           const sc=scoreAtIndex(c,i,ind);if(!sc)continue;
           const opts=[];if(sc.longScore>=85)opts.push({side:"long",score:sc.longScore});if(sc.shortScore>=85)opts.push({side:"short",score:sc.shortScore});opts.sort((a,b)=>b.score-a.score);if(!opts.length)continue;
           const pick=opts[0],openAt=Number(c[i+1].t),activeUntil=pick.side==="long"?activeLongUntil:activeShortUntil;if(activeUntil>=openAt)continue;
@@ -1845,11 +1862,11 @@ async function runMarketAronsonBacktest(){
     const bench=closed.filter(t=>Number.isFinite(t.benchmarkR)),benchR=bench.reduce((s,t)=>s+t.benchmarkR,0),excessR=bench.reduce((s,t)=>s+t.excessR,0);
     const regimes={};for(const r of ["ALCISTA","TRANSICIÓN","BAJISTA","DESCONOCIDO"]){const z=closed.filter(t=>t.btcRegime===r);if(z.length)regimes[r]=btSummary(z);}
     const clusters=new Map();closed.forEach(t=>{const k=t.openedAt;clusters.set(k,(clusters.get(k)||0)+1)});const maxCluster=Math.max(0,...clusters.values());
-    lastMarketAronsonResult={version:universeMode==="historical"?"CQ-MARKET-BT-ARONSON-4-POINT-IN-TIME":"CQ-MARKET-BT-ARONSON-3-PORTFOLIO",createdAt:new Date().toISOString(),interval,bars,universeCount:universe.length,assetsOk:ok,assetsFailed:failed,assumptions:{top100:universeMode==="historical"?"Top histórico point-in-time importado":"Top 100 actual (sesgo de supervivencia)",historicalDataset:universeMode==="historical"?{version:historicalUniverseDataset.version,source:historicalUniverseDataset.source,snapshots:historicalUniverseDataset.snapshots.length}:null,threshold:85,stopPct:3,targetPct:9,riskPct:1,feePerSidePct:feeRate*100,entry:"apertura de vela siguiente",sameCandle:"stop antes de target",qra03:"<10%=1x;10-<20%=0.5x;20-<30%=0.25x;>=30%=0x",trailingSensitivitySteps:BT_TRAILING_SENSITIVITY_STEPS,portfolioTrailingStep:"0.25",portfolioPriority:"score desc, symbol asc within same timestamp",portfolioCapsPct:[10,20]},summaries:{control:controlS,soloLong:longS,qra01:q1S,qra03:q3S,qra01_qra03:q13S,ladder:ladS,trailing025:trailS,qra01_trailing025:q1TrailS},trailingSensitivity,trailingPortfolio,benchmark:{n:bench.length,btcR:benchR,excessR,excessPerTrade:bench.length?excessR/bench.length:0},regimes,clusters:{count:clusters.size,maxSize:maxCluster},trades:closed};
+    lastMarketAronsonResult={version:universeMode==="historical"?"CQ-MARKET-BT-ARONSON-5-POINT-IN-TIME-STRICT":"CQ-MARKET-BT-ARONSON-3-PORTFOLIO",createdAt:new Date().toISOString(),interval,bars,universeCount:universe.length,assetsOk:ok,assetsFailed:failed,pointInTimeAudit:universeMode==="historical"?{strict:true,noNetworkFallback:true,timestampsNormalizedToMs:true,firstSnapshotAt:historicalUniverseDataset.firstSnapshotAt,lastSnapshotAt:historicalUniverseDataset.lastSnapshotAt,excludedNoImported,rejectedBeforeFirstSnapshot,rejectedNotInSnapshot}:null,assumptions:{top100:universeMode==="historical"?"Top histórico point-in-time importado":"Top 100 actual (sesgo de supervivencia)",historicalDataset:universeMode==="historical"?{version:historicalUniverseDataset.version,source:historicalUniverseDataset.source,snapshots:historicalUniverseDataset.snapshots.length}:null,threshold:85,stopPct:3,targetPct:9,riskPct:1,feePerSidePct:feeRate*100,entry:"apertura de vela siguiente",sameCandle:"stop antes de target",qra03:"<10%=1x;10-<20%=0.5x;20-<30%=0.25x;>=30%=0x",trailingSensitivitySteps:BT_TRAILING_SENSITIVITY_STEPS,portfolioTrailingStep:"0.25",portfolioPriority:"score desc, symbol asc within same timestamp",portfolioCapsPct:[10,20]},summaries:{control:controlS,soloLong:longS,qra01:q1S,qra03:q3S,qra01_qra03:q13S,ladder:ladS,trailing025:trailS,qra01_trailing025:q1TrailS},trailingSensitivity,trailingPortfolio,benchmark:{n:bench.length,btcR:benchR,excessR,excessPerTrade:bench.length?excessR/bench.length:0},regimes,clusters:{count:clusters.size,maxSize:maxCluster},trades:closed};
     out.innerHTML=btFmtBranch("Control neto",controlS)+btFmtBranch("Solo LONG",longS)+btFmtBranch("QRA-01",q1S)+btFmtBranch("QRA-03 virtual",q3S)+btFmtBranch("QRA-01 + QRA-03",q13S)+btFmtBranch("Escalera",ladS)+btFmtBranch("Trailing 0.25R",trailS)+btFmtBranch("QRA-01 + Trailing",q1TrailS)+Object.entries(trailingSensitivity).map(([k,v])=>btFmtBranch(`Sensibilidad trailing ${k}R`,v)).join("")+btFmtPortfolio("Cartera 0.25R · sin límite",trailingPortfolio.unlimited)+btFmtPortfolio("Cartera 0.25R · límite 10%",trailingPortfolio.cap10)+btFmtPortfolio("Cartera 0.25R · límite 20%",trailingPortfolio.cap20)+`<div class="result-card"><span>Benchmark BTC</span><strong>${excessR>=0?"+":""}${fmt(excessR,2)}R exceso</strong><small>${bench.length} trades · BTC ${benchR>=0?"+":""}${fmt(benchR,2)}R</small></div>`;
     out.classList.remove("hidden");
-    detail.innerHTML=`<h3>Lectura Aronson-QRA</h3><p><b>${universe.length}</b> activos del ${universeMode==="historical"?"universo histórico point-in-time":"Top 100 actual"} · ${ok} procesados · ${failed} fallidos · ${closed.length} operaciones cerradas · ${clusters.size} clusters · máximo ${maxCluster} señales simultáneas.</p><p><b>Sensibilidad trailing:</b> ${Object.entries(trailingSensitivity).map(([k,v])=>`${k}R: ${v.total>=0?"+":""}${fmt(v.total,1)}R · exp ${v.exp>=0?"+":""}${fmt(v.exp,3)} · DD ${fmt(v.dd,1)}R`).join(" · ")}.</p><p><b>Cartera 0.25R:</b> sin límite ${trailingPortfolio.unlimited.total>=0?"+":""}${fmt(trailingPortfolio.unlimited.total,1)}R · límite 10% ${trailingPortfolio.cap10.total>=0?"+":""}${fmt(trailingPortfolio.cap10.total,1)}R, ${trailingPortfolio.cap10.accepted}/${trailingPortfolio.cap10.signals} señales, DD realizado ${fmt(trailingPortfolio.cap10.dd,1)}R · límite 20% ${trailingPortfolio.cap20.total>=0?"+":""}${fmt(trailingPortfolio.cap20.total,1)}R, ${trailingPortfolio.cap20.accepted}/${trailingPortfolio.cap20.signals} señales, DD realizado ${fmt(trailingPortfolio.cap20.dd,1)}R. Prioridad cuando coinciden señales: score mayor y luego símbolo.</p><p><b>Regímenes BTC:</b> ${Object.entries(regimes).map(([k,v])=>`${k}: ${v.n} trades, ${v.total>=0?"+":""}${fmt(v.total,1)}R`).join(" · ")||"sin datos"}.</p><p><b>Advertencia metodológica:</b> es investigación retrospectiva. ${universeMode==="historical"?"El universo se filtra point-in-time según el dataset importado; revisa cobertura de velas/fallos para detectar sesgo residual.":"Usa el Top 100 actual, por lo que existe sesgo de supervivencia."} La sensibilidad busca una meseta robusta, no el mejor punto. La validación principal sigue siendo la cohorte prospectiva Aronson-QRA ya congelada.</p>`;detail.classList.remove("hidden");$("#exportMarketBtBtn").classList.remove("hidden");
-    prog.textContent=`Terminado · ${ok}/${universe.length} activos · ${closed.length} cerradas · control ${controlS.total>=0?"+":""}${fmt(controlS.total,2)}R netas.`;
+    detail.innerHTML=`<h3>Lectura Aronson-QRA</h3><p><b>${universe.length}</b> activos del ${universeMode==="historical"?"universo histórico point-in-time ESTRICTO":"Top 100 actual"} · ${ok} procesados · ${failed} excluidos/fallidos${universeMode==="historical"?` (sin velas importadas: ${excludedNoImported})`:""} · ${closed.length} operaciones cerradas · ${clusters.size} clusters · máximo ${maxCluster} señales simultáneas.</p><p><b>Sensibilidad trailing:</b> ${Object.entries(trailingSensitivity).map(([k,v])=>`${k}R: ${v.total>=0?"+":""}${fmt(v.total,1)}R · exp ${v.exp>=0?"+":""}${fmt(v.exp,3)} · DD ${fmt(v.dd,1)}R`).join(" · ")}.</p><p><b>Cartera 0.25R:</b> sin límite ${trailingPortfolio.unlimited.total>=0?"+":""}${fmt(trailingPortfolio.unlimited.total,1)}R · límite 10% ${trailingPortfolio.cap10.total>=0?"+":""}${fmt(trailingPortfolio.cap10.total,1)}R, ${trailingPortfolio.cap10.accepted}/${trailingPortfolio.cap10.signals} señales, DD realizado ${fmt(trailingPortfolio.cap10.dd,1)}R · límite 20% ${trailingPortfolio.cap20.total>=0?"+":""}${fmt(trailingPortfolio.cap20.total,1)}R, ${trailingPortfolio.cap20.accepted}/${trailingPortfolio.cap20.signals} señales, DD realizado ${fmt(trailingPortfolio.cap20.dd,1)}R. Prioridad cuando coinciden señales: score mayor y luego símbolo.</p><p><b>Regímenes BTC:</b> ${Object.entries(regimes).map(([k,v])=>`${k}: ${v.n} trades, ${v.total>=0?"+":""}${fmt(v.total,1)}R`).join(" · ")||"sin datos"}.</p><p><b>Advertencia metodológica:</b> es investigación retrospectiva. ${universeMode==="historical"?`Modo estricto: sin fallback a la API actual, timestamps ms/µs normalizados, cero señales antes del primer snapshot y pertenencia al Top histórico validada en cada señal. Rechazos por fecha previa: ${rejectedBeforeFirstSnapshot}; por no pertenecer al snapshot: ${rejectedNotInSnapshot}.`:"Usa el Top 100 actual, por lo que existe sesgo de supervivencia."} La sensibilidad busca una meseta robusta, no el mejor punto. La validación principal sigue siendo la cohorte prospectiva Aronson-QRA ya congelada.</p>`;detail.classList.remove("hidden");$("#exportMarketBtBtn").classList.remove("hidden");
+    prog.textContent=`Terminado${universeMode==="historical"?" ESTRICTO":""} · ${ok}/${universe.length} activos · ${closed.length} cerradas · control ${controlS.total>=0?"+":""}${fmt(controlS.total,2)}R netas.`;
   }catch(e){console.error(e);prog.textContent="Error: "+e.message;alert("No fue posible completar el backtest de mercado: "+e.message);}finally{btn.disabled=false;btn.textContent="Ejecutar backtest de mercado";}
 }
 function exportMarketAronsonResult(){if(!lastMarketAronsonResult)return alert("Primero ejecuta el backtest de mercado.");const blob=new Blob([JSON.stringify(lastMarketAronsonResult,null,2)],{type:"application/json"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`centro-quant-backtest-aronson-${lastMarketAronsonResult.interval}-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}

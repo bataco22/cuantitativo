@@ -101,3 +101,13 @@ Después importa `cq_point_in_time_public.json` en Laboratorio > Backtest Mercad
 - QRA-03 Caps: corte fijo 23/08/2026 12:19:08 p.m. (`1787509148837`), sin usar retrospectivamente operaciones anteriores.
 - Los cortes ya no dependen de `Date.now()` ni de una reinstalación de la PWA.
 - No cambia score, entradas, stops, targets, riesgo ni ejecución del paper trading.
+
+
+## v6.10.5 · point-in-time estricto
+
+- Corrige el backtest histórico para que nunca use velas descargadas de la API actual cuando faltan velas importadas del dataset point-in-time.
+- Normaliza timestamps de Binance Vision en milisegundos, incluyendo los archivos spot que desde 2025 usan microsegundos.
+- Prohíbe señales anteriores al primer snapshot histórico y exige pertenencia al Top N del snapshot vigente en cada señal.
+- El modo histórico importado sólo se ejecuta en 1D, que es la temporalidad incluida en el dataset.
+- Exporta `pointInTimeAudit` con conteos de exclusiones/rechazos para auditar la corrida.
+- No cambia el motor operativo, Score, stop, target, riesgo ni la cohorte prospectiva QRA.

@@ -1,5 +1,5 @@
 
-// v6.10.1 · QRA-03 caps prospectivos + almacenamiento sostenible · sin cambios de estrategia
+// v6.10.2 · continuidad QRA reparada + QRA-03 caps prospectivos · sin cambios de estrategia
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -25,7 +25,7 @@ const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS",
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const QRA_LAB_VERSION = "QRA-OOS-1";
-const APP_VERSION = "6.10.1";
+const APP_VERSION = "6.10.2";
 const RESEARCH_GENERATION = "ARONSON-QRA-2026-08-22-1";
 const HYPOTHESIS_FREEZE_VERSION = "ARONSON-HYPOTHESES-2026-08-22-1";
 const QRA03_VIRTUAL_VERSION = "QRA03-VIRTUAL-1";
@@ -59,6 +59,34 @@ const state = {
   autoPaper: JSON.parse(localStorage.getItem("quant_auto_paper") || "null") || {enabled:false,interval:"4h",threshold:85,stopPct:3,targetPct:9,riskPct:1,capital:20000,lastSignals:{},universe:"top100",minQuoteVolume:5000000},
   scannerResults: []
 };
+
+// Compatibilidad de cohorte: v6.10.0 compactó correctamente las cerradas, pero
+// su esquema compacto omitía qraLab.version/sampleStartedAt. Eso hacía que la UI
+// de v6.10.1 dejara de contar cerradas antiguas aunque los datos QRA siguieran ahí.
+function isQraLabTrade(t){
+  const q=t?.qraLab;
+  if(!q || typeof q!=="object") return false;
+  if(q.version===QRA_LAB_VERSION) return true;
+  const opened=Number(t?.openedAt||0);
+  return opened>=QRA_LAB_STARTED_AT && (Object.prototype.hasOwnProperty.call(q,"qra01Accepted") || q.btcRegime!=null || Object.prototype.hasOwnProperty.call(q,"soloLongAccepted"));
+}
+function repairQraLabContinuity(){
+  let repaired=0;
+  for(const t of state.paperTrades){
+    if(!isQraLabTrade(t)) continue;
+    const q=t.qraLab;
+    if(q.version!==QRA_LAB_VERSION){q.version=QRA_LAB_VERSION;repaired++;}
+    if(!Number(q.sampleStartedAt)) q.sampleStartedAt=QRA_LAB_STARTED_AT;
+    if(!q.hypothesisFreezeVersion) q.hypothesisFreezeVersion=t.researchMeta?.hypothesisFreezeVersion||HYPOTHESIS_FREEZE_VERSION;
+  }
+  if(repaired){
+    try{
+      savePaperState();
+      localStorage.setItem("quant_qra_continuity_repair",JSON.stringify({version:APP_VERSION,at:Date.now(),repaired,qraLabStartedAt:QRA_LAB_STARTED_AT,qra03CapsStartedAt:QRA03_CAPS_STARTED_AT}));
+    }catch(e){console.warn("No se pudo persistir toda la reparación QRA; la vista seguirá usando compatibilidad en memoria.",e);}
+  }
+  return repaired;
+}
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -415,7 +443,7 @@ async function finalizeMarketBenchmark(t){
 }
 function qra03VirtualR(t){const actual=qraActualR(t),m=Number(t.qraLab?.qra03Virtual?.multiplier);return actual==null||!Number.isFinite(m)?null:actual*m;}
 function qra03CapStudy(cap){
-  const pool=state.paperTrades.filter(t=>t.qraLab?.version===QRA_LAB_VERSION&&Number(t.openedAt||0)>=QRA03_CAPS_STARTED_AT).sort((a,b)=>(Number(a.openedAt||0)-Number(b.openedAt||0))||(Number(b.score||0)-Number(a.score||0))||String(a.symbol||"").localeCompare(String(b.symbol||"")));
+  const pool=state.paperTrades.filter(t=>isQraLabTrade(t)&&Number(t.openedAt||0)>=QRA03_CAPS_STARTED_AT).sort((a,b)=>(Number(a.openedAt||0)-Number(b.openedAt||0))||(Number(b.score||0)-Number(a.score||0))||String(a.symbol||"").localeCompare(String(b.symbol||"")));
   const active=[],accepted=[],rejected=[];
   for(const t of pool){
     const ts=Number(t.openedAt||0);
@@ -431,7 +459,7 @@ function qraActualR(t){ return t.status!=="open"&&t.exit!=null?signedRFromPrice(
 function qraBranchR(t,key){ const b=t.exitComparison?.[key]; return b?.status==="closed"?Number(b.resultR||0):null; }
 function renderQraLabStats(){
   const box=$("#qraLabStats"); if(!box) return;
-  const lab=state.paperTrades.filter(t=>t.qraLab?.version===QRA_LAB_VERSION);
+  const lab=state.paperTrades.filter(t=>isQraLabTrade(t));
   if(!lab.length){
     box.innerHTML='<div class="notice">Laboratorio QRA listo. La muestra fuera de entrenamiento empezará con las próximas operaciones guardadas.</div>';
     return;
@@ -471,7 +499,7 @@ function renderQraLabStats(){
 }
 function renderQraLabTrades(){
   const box=$("#qraLabTrades"); if(!box) return;
-  const lab=state.paperTrades.filter(t=>t.qraLab?.version===QRA_LAB_VERSION).sort((a,b)=>(b.openedAt||0)-(a.openedAt||0));
+  const lab=state.paperTrades.filter(t=>isQraLabTrade(t)).sort((a,b)=>(b.openedAt||0)-(a.openedAt||0));
   if(!lab.length){ box.innerHTML='<div class="notice">Todavía no hay operaciones nuevas del Laboratorio QRA.</div>'; return; }
   box.innerHTML=lab.map(t=>{
     const actual=qraActualR(t), ladder=qraBranchR(t,"ladder"), trail=qraBranchR(t,"trailing025");
@@ -898,10 +926,12 @@ function compactClosedTradeRecord(t){
       trailing025:ec.trailing025?{status:ec.trailing025.status,resultR:ec.trailing025.resultR,closedAt:ec.trailing025.closedAt,maxR:ec.trailing025.maxR}:null
     }:null,
     qraLab:q&&Object.keys(q).length?{
+      version:q.version||QRA_LAB_VERSION,sampleStartedAt:Number(q.sampleStartedAt||QRA_LAB_STARTED_AT),hypothesisFreezeVersion:q.hypothesisFreezeVersion||rm.hypothesisFreezeVersion||HYPOTHESIS_FREEZE_VERSION,
       btcRegime:q.btcRegime||"DESCONOCIDO",qra01Accepted:q.qra01Accepted!==false,soloLongAccepted:q.soloLongAccepted??(t.side==="long"),
       qra03Observation:{sameDirectionOpen:Number(obs.sameDirectionOpen||0),sameDirectionRiskCash:Number(obs.sameDirectionRiskCash||0)},
-      qra03Virtual:{multiplier:q3.multiplier??null,virtualRiskCash:q3.virtualRiskCash??null,accepted:q3.accepted??null},
-      marketBenchmark:{benchmarkR:bm.benchmarkR??null,excessR:bm.excessR??null,status:bm.status||null}
+      qra03Virtual:{version:q3.version||QRA03_VIRTUAL_VERSION,multiplier:q3.multiplier??null,virtualRiskCash:q3.virtualRiskCash??null,accepted:q3.accepted??null},
+      qra03CapsStudy:q.qra03CapsStudy?{version:q.qra03CapsStudy.version||QRA03_CAPS_VERSION,startedAt:Number(q.qra03CapsStudy.startedAt||QRA03_CAPS_STARTED_AT),caps:Array.isArray(q.qra03CapsStudy.caps)?q.qra03CapsStudy.caps:[...QRA03_CAPS],priority:q.qra03CapsStudy.priority||"score-desc,symbol-asc",sameDirectionOnly:true,mode:"research-only"}:null,
+      marketBenchmark:{version:bm.version||MARKET_BENCHMARK_VERSION,benchmarkR:bm.benchmarkR??null,excessR:bm.excessR??null,status:bm.status||null}
     }:null,
     rPathSummary:rsum?{rows:rsum.rows??null,maxBestR:rsum.maxBestR??null,minWorstR:rsum.minWorstR??null,maxLevelR:rsum.maxLevelR??0}:null,
     rLevelsHit:Array.isArray(t.rLevelsHit)?t.rLevelsHit:[],
@@ -1579,6 +1609,7 @@ $("#trafficNeedsBtn").onclick=()=>{const box=$("#trafficNeeds"),btn=$("#trafficN
 $("#paperFilter").onchange=renderPaperTrades;
 $("#exportPaperBtn").onclick=exportPaperCSV;
 
+repairQraLabContinuity();
 runStorageMaintenance();
 renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();renderPaperMonitor();renderScannerResults();syncAutoPaperControls();if($("#homeTimeframeSelect"))$("#homeTimeframeSelect").value=state.homeInterval;renderHome();refreshAll().then(async()=>{await refreshHomeTimeframe(state.homeInterval);await updatePaperTrades();await backfillPaperMFE();renderPaperTrades();await scanAutoPaper();});
 if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(console.warn);

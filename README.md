@@ -76,10 +76,19 @@ py build_point_in_time_dataset_public.py --start 2024-07-01 --end 2026-08-22 --o
 Después importa `cq_point_in_time_public.json` en Laboratorio > Backtest Mercado Aronson-QRA y selecciona Universo = Histórico point-in-time importado.
 
 
-## v6.10.1 · almacenamiento sostenible
+## v6.10.2 · almacenamiento sostenible
 
-- Corrige la discrepancia de versión interna: APP_VERSION ahora es 6.10.1, por lo que respaldos y operaciones nuevas quedan sellados correctamente.
+- Corrige la discrepancia de versión interna: APP_VERSION ahora es 6.10.2, por lo que respaldos y operaciones nuevas quedan sellados correctamente.
 - Añade compactación de cuatro capas. Las operaciones abiertas nunca se compactan.
 - Las cerradas antiguas conservan entrada/salida, R, MFE/MAE, score y factores, QRA-01/QRA-03, benchmark BTC, escalera/trailing y metadatos de cohorte, pero eliminan series redundantes ya consolidadas.
 - Mantenimiento preventivo cuando el ledger se acerca al límite típico de localStorage en Safari/iOS.
 - No modifica reglas de entrada, stop, target, score, riesgo ni los experimentos prospectivos.
+
+
+## v6.10.2 · reparación de continuidad QRA
+
+- Repara automáticamente las operaciones QRA cerradas que fueron compactadas por v6.10.0 y conservaron sus métricas, pero perdieron el campo `qraLab.version` del esquema compacto.
+- Control CQ, QRA-01, Solo LONG, Escalera, Trailing y Benchmark vuelven a usar la cohorte QRA histórica continua.
+- QRA-03 Caps 1/2/3/5/10 conserva su fecha prospectiva propia iniciada en v6.10.1; no reinterpreta operaciones anteriores.
+- La compactación futura conserva explícitamente `qraLab.version`, `sampleStartedAt`, versión de hipótesis y metadatos QRA-03 Caps.
+- No cambia entradas, score, stop, target, riesgo, paper trading ni reglas de salida del control.

@@ -1,5 +1,5 @@
 
-// v6.9.6 · backtest Mercado Aronson-QRA + v6.9.5 sin cambios de estrategia
+// v6.10.0 · almacenamiento sostenible + point-in-time Aronson-QRA · sin cambios de estrategia
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -25,7 +25,7 @@ const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS",
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const QRA_LAB_VERSION = "QRA-OOS-1";
-const APP_VERSION = "6.9.5";
+const APP_VERSION = "6.10.0";
 const RESEARCH_GENERATION = "ARONSON-QRA-2026-08-22-1";
 const HYPOTHESIS_FREEZE_VERSION = "ARONSON-HYPOTHESES-2026-08-22-1";
 const QRA03_VIRTUAL_VERSION = "QRA03-VIRTUAL-1";
@@ -860,36 +860,85 @@ function compactClosedRPathsForStorage(keepRecentFull=50){
     t.rPathCompacted=true;
   });
 }
+function compactClosedTradeRecord(t){
+  if(!t || t.status==="open" || t.storageCompactVersion==="6.10.0") return t;
+  const rsum=(Array.isArray(t.rPath)&&t.rPath.length?summarizeRPath(t):t.rPathSummary)||null;
+  const s=t.snapshot||{},rm=t.researchMeta||{},ec=t.exitComparison||{},q=t.qraLab||{};
+  const obs=q.qra03Observation||{},q3=q.qra03Virtual||{},bm=q.marketBenchmark||{};
+  const out={
+    id:t.id,symbol:t.symbol,side:t.side,interval:t.interval,entry:t.entry,stop:t.stop,target:t.target,
+    openedAt:t.openedAt,status:t.status,score:t.score,capital:t.capital,riskPct:t.riskPct,riskCash:t.riskCash,
+    qty:t.qty,potentialProfit:t.potentialProfit,closedAt:t.closedAt,exit:t.exit,resultPct:t.resultPct,mfeR:t.mfeR,maeR:t.maeR,
+    snapshot:{
+      rsi:s.rsi,adx:s.adx,atrPct:s.atrPct,volumeRatio:s.volumeRatio,trend:s.trend,
+      factorScores:s.factorScores||null,weights:s.weights||null,scoreAlgorithmVersion:s.scoreAlgorithmVersion||null
+    },
+    researchMeta:{researchGeneration:rm.researchGeneration||null,hypothesisFreezeVersion:rm.hypothesisFreezeVersion||null},
+    exitComparison:ec&&Object.keys(ec).length?{
+      ladder:ec.ladder?{status:ec.ladder.status,resultR:ec.ladder.resultR,closedAt:ec.ladder.closedAt,maxR:ec.ladder.maxR}:null,
+      trailing025:ec.trailing025?{status:ec.trailing025.status,resultR:ec.trailing025.resultR,closedAt:ec.trailing025.closedAt,maxR:ec.trailing025.maxR}:null
+    }:null,
+    qraLab:q&&Object.keys(q).length?{
+      btcRegime:q.btcRegime||"DESCONOCIDO",qra01Accepted:q.qra01Accepted!==false,soloLongAccepted:q.soloLongAccepted??(t.side==="long"),
+      qra03Observation:{sameDirectionOpen:Number(obs.sameDirectionOpen||0),sameDirectionRiskCash:Number(obs.sameDirectionRiskCash||0)},
+      qra03Virtual:{multiplier:q3.multiplier??null,virtualRiskCash:q3.virtualRiskCash??null,accepted:q3.accepted??null},
+      marketBenchmark:{benchmarkR:bm.benchmarkR??null,excessR:bm.excessR??null,status:bm.status||null}
+    }:null,
+    rPathSummary:rsum?{rows:rsum.rows??null,maxBestR:rsum.maxBestR??null,minWorstR:rsum.minWorstR??null,maxLevelR:rsum.maxLevelR??0}:null,
+    rLevelsHit:Array.isArray(t.rLevelsHit)?t.rLevelsHit:[],
+    candleLog:[],candleLogCount:Number(t.candleLogCount||(Array.isArray(t.candleLog)?t.candleLog.length:0)||0),candleLogCompacted:true,
+    rPath:[],rPathCount:Number(t.rPathCount||(Array.isArray(t.rPath)?t.rPath.length:0)||0),rPathCompacted:true,
+    storageCompactVersion:"6.10.0"
+  };
+  if(t.notes && !/^AUTO TOP 100/i.test(String(t.notes))) out.notes=t.notes;
+  if(t.scoreType && t.scoreType!=="auto-score-top100") out.scoreType=t.scoreType;
+  return out;
+}
+function compactClosedTradeRecordsForStorage(keepRecentFull=20){
+  const closed=state.paperTrades.filter(t=>t.status!=="open").sort((a,b)=>Number(b.closedAt||0)-Number(a.closedAt||0));
+  const keep=new Set(closed.slice(0,Math.max(0,keepRecentFull)).map(t=>t.id));
+  state.paperTrades=state.paperTrades.map(t=>t.status!=="open"&&!keep.has(t.id)?compactClosedTradeRecord(t):t);
+}
 function storagePayload(){ return JSON.stringify(state.paperTrades); }
+function setPaperStorage(payload){ localStorage.setItem("quant_paper_trades",payload); return true; }
+function isQuotaError(e){ return e?.name==="QuotaExceededError" || /quota|storage/i.test(String(e?.message||e)); }
 function savePaperState(){
   let payload=storagePayload();
-  try{
-    localStorage.setItem("quant_paper_trades",payload);
-    return true;
-  }catch(e){
-    const quota=e?.name==="QuotaExceededError" || /quota/i.test(String(e?.message||e));
-    if(!quota) throw e;
-  }
+  try{return setPaperStorage(payload)}catch(e){if(!isQuotaError(e))throw e;}
+
   // Capa 1: OHLC cerrado.
-  compactClosedCandleLogsForStorage();
-  payload=storagePayload();
-  try{
-    localStorage.setItem("quant_paper_trades",payload);
-    return true;
-  }catch(e){
-    const quota=e?.name==="QuotaExceededError" || /quota/i.test(String(e?.message||e));
-    if(!quota) throw e;
+  compactClosedCandleLogsForStorage();payload=storagePayload();
+  try{return setPaperStorage(payload)}catch(e){if(!isQuotaError(e))throw e;}
+
+  // Capa 2: rPath de cerradas antiguas.
+  compactClosedRPathsForStorage(20);payload=storagePayload();
+  try{return setPaperStorage(payload)}catch(e){if(!isQuotaError(e))throw e;}
+
+  // Capa 3: consolidación científica de cerradas antiguas. Mantiene 20 recientes completas.
+  compactClosedTradeRecordsForStorage(20);payload=storagePayload();
+  try{return setPaperStorage(payload)}catch(e){if(!isQuotaError(e))throw e;}
+
+  // Capa 4 de emergencia: consolida también las cerradas recientes; NUNCA toca abiertas.
+  compactClosedTradeRecordsForStorage(0);payload=storagePayload();
+  try{return setPaperStorage(payload)}catch(e2){
+    console.error("Centro Quant: almacenamiento local lleno incluso después de compactación v6.10.0",e2);
+    throw new Error("Almacenamiento local lleno aun después de consolidar todas las cerradas. Las operaciones abiertas siguen intactas en memoria; exporta un respaldo antes de liberar datos del navegador.");
   }
-  // Capa 2: rPath de cerradas antiguas. Conserva las 50 cerradas más recientes completas.
-  compactClosedRPathsForStorage(50);
-  payload=storagePayload();
+}
+function runStorageMaintenance(){
+  // iOS/Safari suele limitar localStorage a ~5 MB y almacena strings en una representación
+  // costosa. Si el ledger supera este umbral, compacta sólo cerradas antes de llegar a cuota.
   try{
-    localStorage.setItem("quant_paper_trades",payload);
-    return true;
-  }catch(e2){
-    console.error("Centro Quant: almacenamiento local lleno incluso después de compactación de segundo nivel",e2);
-    throw new Error("Almacenamiento local lleno incluso después de compactar cerradas. Tu historial de operaciones sigue en memoria; exporta un respaldo y libera espacio antes de continuar.");
-  }
+    const before=storagePayload().length;
+    if(before<1800000) return;
+    compactClosedCandleLogsForStorage();
+    compactClosedRPathsForStorage(20);
+    compactClosedTradeRecordsForStorage(20);
+    let payload=storagePayload();
+    if(payload.length>1900000){compactClosedTradeRecordsForStorage(0);payload=storagePayload();}
+    setPaperStorage(payload);
+    localStorage.setItem("quant_storage_maintenance",JSON.stringify({version:APP_VERSION,at:Date.now(),beforeChars:before,afterChars:payload.length,open:state.paperTrades.filter(t=>t.status==="open").length,closed:state.paperTrades.filter(t=>t.status!=="open").length}));
+  }catch(e){console.warn("Centro Quant: mantenimiento preventivo de almacenamiento no pudo completarse",e);}
 }
 function paperLevels(entry,side,stopMode,stopValue,targetMode,targetValue){
   const stop=stopMode==="percent"?(side==="long"?entry*(1-stopValue/100):entry*(1+stopValue/100)):stopValue;
@@ -1511,6 +1560,7 @@ $("#trafficNeedsBtn").onclick=()=>{const box=$("#trafficNeeds"),btn=$("#trafficN
 $("#paperFilter").onchange=renderPaperTrades;
 $("#exportPaperBtn").onclick=exportPaperCSV;
 
+runStorageMaintenance();
 renderWeights();fillAssetSelects();renderAssets();renderRanking();renderPaperTrades();renderPaperMonitor();renderScannerResults();syncAutoPaperControls();if($("#homeTimeframeSelect"))$("#homeTimeframeSelect").value=state.homeInterval;renderHome();refreshAll().then(async()=>{await refreshHomeTimeframe(state.homeInterval);await updatePaperTrades();await backfillPaperMFE();renderPaperTrades();await scanAutoPaper();});
 if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(console.warn);
 
@@ -1724,7 +1774,7 @@ async function runMarketAronsonBacktest(){
     lastMarketAronsonResult={version:universeMode==="historical"?"CQ-MARKET-BT-ARONSON-4-POINT-IN-TIME":"CQ-MARKET-BT-ARONSON-3-PORTFOLIO",createdAt:new Date().toISOString(),interval,bars,universeCount:universe.length,assetsOk:ok,assetsFailed:failed,assumptions:{top100:universeMode==="historical"?"Top histórico point-in-time importado":"Top 100 actual (sesgo de supervivencia)",historicalDataset:universeMode==="historical"?{version:historicalUniverseDataset.version,source:historicalUniverseDataset.source,snapshots:historicalUniverseDataset.snapshots.length}:null,threshold:85,stopPct:3,targetPct:9,riskPct:1,feePerSidePct:feeRate*100,entry:"apertura de vela siguiente",sameCandle:"stop antes de target",qra03:"<10%=1x;10-<20%=0.5x;20-<30%=0.25x;>=30%=0x",trailingSensitivitySteps:BT_TRAILING_SENSITIVITY_STEPS,portfolioTrailingStep:"0.25",portfolioPriority:"score desc, symbol asc within same timestamp",portfolioCapsPct:[10,20]},summaries:{control:controlS,soloLong:longS,qra01:q1S,qra03:q3S,qra01_qra03:q13S,ladder:ladS,trailing025:trailS,qra01_trailing025:q1TrailS},trailingSensitivity,trailingPortfolio,benchmark:{n:bench.length,btcR:benchR,excessR,excessPerTrade:bench.length?excessR/bench.length:0},regimes,clusters:{count:clusters.size,maxSize:maxCluster},trades:closed};
     out.innerHTML=btFmtBranch("Control neto",controlS)+btFmtBranch("Solo LONG",longS)+btFmtBranch("QRA-01",q1S)+btFmtBranch("QRA-03 virtual",q3S)+btFmtBranch("QRA-01 + QRA-03",q13S)+btFmtBranch("Escalera",ladS)+btFmtBranch("Trailing 0.25R",trailS)+btFmtBranch("QRA-01 + Trailing",q1TrailS)+Object.entries(trailingSensitivity).map(([k,v])=>btFmtBranch(`Sensibilidad trailing ${k}R`,v)).join("")+btFmtPortfolio("Cartera 0.25R · sin límite",trailingPortfolio.unlimited)+btFmtPortfolio("Cartera 0.25R · límite 10%",trailingPortfolio.cap10)+btFmtPortfolio("Cartera 0.25R · límite 20%",trailingPortfolio.cap20)+`<div class="result-card"><span>Benchmark BTC</span><strong>${excessR>=0?"+":""}${fmt(excessR,2)}R exceso</strong><small>${bench.length} trades · BTC ${benchR>=0?"+":""}${fmt(benchR,2)}R</small></div>`;
     out.classList.remove("hidden");
-    detail.innerHTML=`<h3>Lectura Aronson-QRA</h3><p><b>${universe.length}</b> activos del ${universeMode==="historical"?"universo histórico point-in-time":"Top 100 actual"} · ${ok} procesados · ${failed} fallidos · ${closed.length} operaciones cerradas · ${clusters.size} clusters · máximo ${maxCluster} señales simultáneas.</p><p><b>Sensibilidad trailing:</b> ${Object.entries(trailingSensitivity).map(([k,v])=>`${k}R: ${v.total>=0?"+":""}${fmt(v.total,1)}R · exp ${v.exp>=0?"+":""}${fmt(v.exp,3)} · DD ${fmt(v.dd,1)}R`).join(" · ")}.</p><p><b>Cartera 0.25R:</b> sin límite ${trailingPortfolio.unlimited.total>=0?"+":""}${fmt(trailingPortfolio.unlimited.total,1)}R · límite 10% ${trailingPortfolio.cap10.total>=0?"+":""}${fmt(trailingPortfolio.cap10.total,1)}R, ${trailingPortfolio.cap10.accepted}/${trailingPortfolio.cap10.signals} señales, DD realizado ${fmt(trailingPortfolio.cap10.dd,1)}R · límite 20% ${trailingPortfolio.cap20.total>=0?"+":""}${fmt(trailingPortfolio.cap20.total,1)}R, ${trailingPortfolio.cap20.accepted}/${trailingPortfolio.cap20.signals} señales, DD realizado ${fmt(trailingPortfolio.cap20.dd,1)}R. Prioridad cuando coinciden señales: score mayor y luego símbolo.</p><p><b>Regímenes BTC:</b> ${Object.entries(regimes).map(([k,v])=>`${k}: ${v.n} trades, ${v.total>=0?"+":""}${fmt(v.total,1)}R`).join(" · ")||"sin datos"}.</p><p><b>Advertencia metodológica:</b> es investigación retrospectiva. ${universeMode==="historical"?"El universo se filtra point-in-time según el dataset importado; revisa cobertura de velas/fallos para detectar sesgo residual.":"Usa el Top 100 actual, por lo que existe sesgo de supervivencia."} La sensibilidad busca una meseta robusta, no el mejor punto. La validación principal sigue siendo la cohorte prospectiva v6.9.5+.</p>`;detail.classList.remove("hidden");$("#exportMarketBtBtn").classList.remove("hidden");
+    detail.innerHTML=`<h3>Lectura Aronson-QRA</h3><p><b>${universe.length}</b> activos del ${universeMode==="historical"?"universo histórico point-in-time":"Top 100 actual"} · ${ok} procesados · ${failed} fallidos · ${closed.length} operaciones cerradas · ${clusters.size} clusters · máximo ${maxCluster} señales simultáneas.</p><p><b>Sensibilidad trailing:</b> ${Object.entries(trailingSensitivity).map(([k,v])=>`${k}R: ${v.total>=0?"+":""}${fmt(v.total,1)}R · exp ${v.exp>=0?"+":""}${fmt(v.exp,3)} · DD ${fmt(v.dd,1)}R`).join(" · ")}.</p><p><b>Cartera 0.25R:</b> sin límite ${trailingPortfolio.unlimited.total>=0?"+":""}${fmt(trailingPortfolio.unlimited.total,1)}R · límite 10% ${trailingPortfolio.cap10.total>=0?"+":""}${fmt(trailingPortfolio.cap10.total,1)}R, ${trailingPortfolio.cap10.accepted}/${trailingPortfolio.cap10.signals} señales, DD realizado ${fmt(trailingPortfolio.cap10.dd,1)}R · límite 20% ${trailingPortfolio.cap20.total>=0?"+":""}${fmt(trailingPortfolio.cap20.total,1)}R, ${trailingPortfolio.cap20.accepted}/${trailingPortfolio.cap20.signals} señales, DD realizado ${fmt(trailingPortfolio.cap20.dd,1)}R. Prioridad cuando coinciden señales: score mayor y luego símbolo.</p><p><b>Regímenes BTC:</b> ${Object.entries(regimes).map(([k,v])=>`${k}: ${v.n} trades, ${v.total>=0?"+":""}${fmt(v.total,1)}R`).join(" · ")||"sin datos"}.</p><p><b>Advertencia metodológica:</b> es investigación retrospectiva. ${universeMode==="historical"?"El universo se filtra point-in-time según el dataset importado; revisa cobertura de velas/fallos para detectar sesgo residual.":"Usa el Top 100 actual, por lo que existe sesgo de supervivencia."} La sensibilidad busca una meseta robusta, no el mejor punto. La validación principal sigue siendo la cohorte prospectiva Aronson-QRA ya congelada.</p>`;detail.classList.remove("hidden");$("#exportMarketBtBtn").classList.remove("hidden");
     prog.textContent=`Terminado · ${ok}/${universe.length} activos · ${closed.length} cerradas · control ${controlS.total>=0?"+":""}${fmt(controlS.total,2)}R netas.`;
   }catch(e){console.error(e);prog.textContent="Error: "+e.message;alert("No fue posible completar el backtest de mercado: "+e.message);}finally{btn.disabled=false;btn.textContent="Ejecutar backtest de mercado";}
 }

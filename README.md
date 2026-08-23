@@ -64,3 +64,22 @@ Antes de actualizar, conserva el respaldo JSON original. La compactación nunca 
 - No modifica el paper trading ni la cohorte prospectiva.
 - Incluye `build_point_in_time_dataset.py`: usa el endpoint oficial `listings/historical` de CoinMarketCap mediante `CMC_API_KEY` y Binance Vision para velas 1D archivadas.
 - El resultado exportado marca si se usó universo actual o histórico y cuántos snapshots contenía el dataset.
+
+### Generador sin API de pago
+También se incluye `build_point_in_time_dataset_public.py`, que usa las páginas públicas de Historical Snapshot de CoinMarketCap (un snapshot por mes) y Binance Vision para velas 1D. No requiere API key. En Windows PowerShell:
+
+```
+py -m pip install requests beautifulsoup4
+py build_point_in_time_dataset_public.py --start 2024-07-01 --end 2026-08-22 --out cq_point_in_time_public.json
+```
+
+Después importa `cq_point_in_time_public.json` en Laboratorio > Backtest Mercado Aronson-QRA y selecciona Universo = Histórico point-in-time importado.
+
+
+## v6.10.0 · almacenamiento sostenible
+
+- Corrige la discrepancia de versión interna: APP_VERSION ahora es 6.10.0, por lo que respaldos y operaciones nuevas quedan sellados correctamente.
+- Añade compactación de cuatro capas. Las operaciones abiertas nunca se compactan.
+- Las cerradas antiguas conservan entrada/salida, R, MFE/MAE, score y factores, QRA-01/QRA-03, benchmark BTC, escalera/trailing y metadatos de cohorte, pero eliminan series redundantes ya consolidadas.
+- Mantenimiento preventivo cuando el ledger se acerca al límite típico de localStorage en Safari/iOS.
+- No modifica reglas de entrada, stop, target, score, riesgo ni los experimentos prospectivos.

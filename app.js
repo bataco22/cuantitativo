@@ -1,5 +1,5 @@
 
-// v6.10.0 · almacenamiento sostenible + point-in-time Aronson-QRA · sin cambios de estrategia
+// v6.10.1 · QRA-03 caps prospectivos + almacenamiento sostenible · sin cambios de estrategia
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -25,10 +25,12 @@ const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS",
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const QRA_LAB_VERSION = "QRA-OOS-1";
-const APP_VERSION = "6.10.0";
+const APP_VERSION = "6.10.1";
 const RESEARCH_GENERATION = "ARONSON-QRA-2026-08-22-1";
 const HYPOTHESIS_FREEZE_VERSION = "ARONSON-HYPOTHESES-2026-08-22-1";
 const QRA03_VIRTUAL_VERSION = "QRA03-VIRTUAL-1";
+const QRA03_CAPS_VERSION = "QRA03-CAPS-2026-08-23-1";
+const QRA03_CAPS = Object.freeze([1,2,3,5,10]);
 const MARKET_BENCHMARK_VERSION = "BTC-PRIOR-CLOSE-1";
 const HYPOTHESIS_REGISTRY = Object.freeze({
   qra01:"Bloquear SHORT cuando BTC esté ALCISTA según prev-close-3bar-breakout.",
@@ -41,6 +43,8 @@ const PROSPECTIVE_STARTED_AT = Number(localStorage.getItem("quant_aronson_qra_st
 if(!localStorage.getItem("quant_aronson_qra_started_at")) localStorage.setItem("quant_aronson_qra_started_at",String(PROSPECTIVE_STARTED_AT));
 const QRA_LAB_STARTED_AT = Number(localStorage.getItem("quant_qra_lab_started_at")||0) || Date.now();
 if(!localStorage.getItem("quant_qra_lab_started_at")) localStorage.setItem("quant_qra_lab_started_at",String(QRA_LAB_STARTED_AT));
+const QRA03_CAPS_STARTED_AT = Number(localStorage.getItem("quant_qra03_caps_started_at")||0) || Date.now();
+if(!localStorage.getItem("quant_qra03_caps_started_at")) localStorage.setItem("quant_qra03_caps_started_at",String(QRA03_CAPS_STARTED_AT));
 const qraRegimeCache=new Map();
 
 const state = {
@@ -396,7 +400,7 @@ async function buildQraLabSnapshot(side,openedAt,interval,riskCash,capital){
   const blocked=side==="short"&&regime.state==="ALCISTA",exposure=qraExposureSnapshot(side,openedAt);
   const qra03Virtual=qra03VirtualDecision(exposure,riskCash,capital);
   const marketBenchmark={version:MARKET_BENCHMARK_VERSION,asset:"BTC",side,interval:interval||null,entryPrice:btcRef.price,entryAsOf:btcRef.asOf,exitPrice:null,exitAsOf:null,directionalReturnPct:null,benchmarkR:null,excessR:null,status:btcRef.price?"tracking":"missing-entry"};
-  return {version:QRA_LAB_VERSION,evaluatedAt:Date.now(),sampleStartedAt:QRA_LAB_STARTED_AT,hypothesisFreezeVersion:HYPOTHESIS_FREEZE_VERSION,btcRegime:regime.state,btcClose:regime.close,btcAsOf:regime.asOf,rule:regime.rule,qra01Accepted:!blocked,qra01Reason:blocked?"SHORT bloqueado: BTC ALCISTA":"Aceptada por QRA-01",soloLongAccepted:side==="long",soloLongReason:side==="long"?"Aceptada: LONG":"Rechazada: estrategia Solo LONG",qra03Observation:exposure,qra03Virtual,marketBenchmark};
+  return {version:QRA_LAB_VERSION,evaluatedAt:Date.now(),sampleStartedAt:QRA_LAB_STARTED_AT,hypothesisFreezeVersion:HYPOTHESIS_FREEZE_VERSION,btcRegime:regime.state,btcClose:regime.close,btcAsOf:regime.asOf,rule:regime.rule,qra01Accepted:!blocked,qra01Reason:blocked?"SHORT bloqueado: BTC ALCISTA":"Aceptada por QRA-01",soloLongAccepted:side==="long",soloLongReason:side==="long"?"Aceptada: LONG":"Rechazada: estrategia Solo LONG",qra03Observation:exposure,qra03Virtual,qra03CapsStudy:{version:QRA03_CAPS_VERSION,startedAt:QRA03_CAPS_STARTED_AT,caps:[...QRA03_CAPS],priority:"score-desc,symbol-asc",sameDirectionOnly:true,mode:"research-only"},marketBenchmark};
 }
 async function finalizeMarketBenchmark(t){
   const b=t?.qraLab?.marketBenchmark;if(!b||b.status==="complete"||!t.closedAt)return;
@@ -410,6 +414,19 @@ async function finalizeMarketBenchmark(t){
   const actual=qraActualR(t);b.excessR=actual!=null&&b.benchmarkR!=null?+(actual-b.benchmarkR).toFixed(6):null;b.status="complete";
 }
 function qra03VirtualR(t){const actual=qraActualR(t),m=Number(t.qraLab?.qra03Virtual?.multiplier);return actual==null||!Number.isFinite(m)?null:actual*m;}
+function qra03CapStudy(cap){
+  const pool=state.paperTrades.filter(t=>t.qraLab?.version===QRA_LAB_VERSION&&Number(t.openedAt||0)>=QRA03_CAPS_STARTED_AT).sort((a,b)=>(Number(a.openedAt||0)-Number(b.openedAt||0))||(Number(b.score||0)-Number(a.score||0))||String(a.symbol||"").localeCompare(String(b.symbol||"")));
+  const active=[],accepted=[],rejected=[];
+  for(const t of pool){
+    const ts=Number(t.openedAt||0);
+    for(let i=active.length-1;i>=0;i--){const c=Number(active[i].closedAt||0);if(c>0&&c<ts)active.splice(i,1);}
+    const same=active.filter(x=>x.side===t.side).length;
+    if(same<cap){accepted.push(t);active.push(t);}else rejected.push(t);
+  }
+  const closed=accepted.filter(t=>t.status!=="open"&&t.exit!=null),open=accepted.filter(t=>t.status==="open");
+  const total=closed.reduce((s,t)=>s+Number(qraActualR(t)||0),0);
+  return {cap,pool,accepted,rejected,closed,open,total,exp:closed.length?total/closed.length:0};
+}
 function qraActualR(t){ return t.status!=="open"&&t.exit!=null?signedRFromPrice(t,t.exit):null; }
 function qraBranchR(t,key){ const b=t.exitComparison?.[key]; return b?.status==="closed"?Number(b.resultR||0):null; }
 function renderQraLabStats(){
@@ -443,6 +460,8 @@ function renderQraLabStats(){
     ["QRA-01 + Trailing",trail.length?`${trailR>=0?"+":""}${fmt(trailR,2)}R · ${trail.length} cerradas`:"Esperando"],
     ["Rechazadas QRA-01",`${rejected.length} · control ${rejectedControlR>=0?"+":""}${fmt(rejectedControlR,2)}R`],
     ["QRA-03 virtual",qra03Closed.length?`${qra03R>=0?"+":""}${fmt(qra03R,2)}R · ${qra03Closed.length} cerradas`:"Esperando"],
+    ...QRA03_CAPS.map(cap=>{const x=qra03CapStudy(cap);return [`QRA-03 cap ${cap}`,x.closed.length?`${x.total>=0?"+":""}${fmt(x.total,2)}R · ${x.closed.length} cerradas · ${x.open.length} abiertas`:`Esperando nuevas operaciones`]}),
+    ["QRA-03 caps desde",new Date(QRA03_CAPS_STARTED_AT).toLocaleString("es-MX")],
     ["Benchmark BTC",benchmarked.length?`${btcBenchR>=0?"+":""}${fmt(btcBenchR,2)}R · exceso ${excessR>=0?"+":""}${fmt(excessR,2)}R`:"Esperando"],
     ["Máx. señales misma dirección",maxPeers],
     ["Inicio fuera de muestra",new Date(QRA_LAB_STARTED_AT).toLocaleString("es-MX")]

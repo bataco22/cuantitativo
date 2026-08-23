@@ -1,5 +1,5 @@
 
-// v6.10.3 · separación histórica vs OOS estricta + QRA-03 caps prospectivos · sin cambios de estrategia
+// v6.10.4 · tres cohortes fijas: QRA histórico, OOS Aronson congelada y QRA-03 caps · sin cambios de estrategia
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -25,7 +25,7 @@ const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS",
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const QRA_LAB_VERSION = "QRA-OOS-1";
-const APP_VERSION = "6.10.3";
+const APP_VERSION = "6.10.4";
 const RESEARCH_GENERATION = "ARONSON-QRA-2026-08-22-1";
 const HYPOTHESIS_FREEZE_VERSION = "ARONSON-HYPOTHESES-2026-08-22-1";
 const QRA03_VIRTUAL_VERSION = "QRA03-VIRTUAL-1";
@@ -39,12 +39,19 @@ const HYPOTHESIS_REGISTRY = Object.freeze({
   score:"Evaluar prospectivamente calibración y aporte incremental de los componentes del score.",
   benchmark:"Medir rendimiento de Quant frente a BTC direccional durante la misma ventana, sin usarlo para ejecutar."
 });
-const PROSPECTIVE_STARTED_AT = Number(localStorage.getItem("quant_aronson_qra_started_at")||0) || Date.now();
-if(!localStorage.getItem("quant_aronson_qra_started_at")) localStorage.setItem("quant_aronson_qra_started_at",String(PROSPECTIVE_STARTED_AT));
-const QRA_LAB_STARTED_AT = Number(localStorage.getItem("quant_qra_lab_started_at")||0) || Date.now();
-if(!localStorage.getItem("quant_qra_lab_started_at")) localStorage.setItem("quant_qra_lab_started_at",String(QRA_LAB_STARTED_AT));
-const QRA03_CAPS_STARTED_AT = Number(localStorage.getItem("quant_qra03_caps_started_at")||0) || Date.now();
-if(!localStorage.getItem("quant_qra03_caps_started_at")) localStorage.setItem("quant_qra03_caps_started_at",String(QRA03_CAPS_STARTED_AT));
+// Cortes preregistrados y congelados. No dependen de cuándo se actualice/reinstale la PWA.
+// 19/8/2026 11:32:53 a.m. MX: laboratorio QRA legado (referencia histórica, NO OOS estricta).
+// 22/8/2026 2:54:03 p.m. MX: congelación Aronson/HYPOTHESES; desde aquí empieza OOS estricta.
+// 23/8/2026 12:19:08 p.m. MX: experimento prospectivo QRA-03 caps 1/2/3/5/10.
+const QRA_LEGACY_STARTED_AT = 1787160773905;
+const STRICT_OOS_STARTED_AT = 1787432043024;
+const QRA03_CAPS_FROZEN_STARTED_AT = 1787509148837;
+const PROSPECTIVE_STARTED_AT = STRICT_OOS_STARTED_AT;
+const QRA_LAB_STARTED_AT = QRA_LEGACY_STARTED_AT;
+const QRA03_CAPS_STARTED_AT = QRA03_CAPS_FROZEN_STARTED_AT;
+localStorage.setItem("quant_aronson_qra_started_at",String(PROSPECTIVE_STARTED_AT));
+localStorage.setItem("quant_qra_lab_started_at",String(QRA_LAB_STARTED_AT));
+localStorage.setItem("quant_qra03_caps_started_at",String(QRA03_CAPS_STARTED_AT));
 const qraRegimeCache=new Map();
 
 const state = {
@@ -69,6 +76,18 @@ function isQraLabTrade(t){
   if(q.version===QRA_LAB_VERSION) return true;
   const opened=Number(t?.openedAt||0);
   return opened>=QRA_LAB_STARTED_AT && (Object.prototype.hasOwnProperty.call(q,"qra01Accepted") || q.btcRegime!=null || Object.prototype.hasOwnProperty.call(q,"soloLongAccepted"));
+}
+function isStrictOosTrade(t){
+  const opened=Number(t?.openedAt||0);
+  if(opened<STRICT_OOS_STARTED_AT) return false;
+  const rm=t?.researchMeta||{}, q=t?.qraLab||{};
+  return rm.openedAfterHypothesisFreeze===true ||
+    rm.researchGeneration===RESEARCH_GENERATION ||
+    rm.hypothesisFreezeVersion===HYPOTHESIS_FREEZE_VERSION ||
+    q.hypothesisFreezeVersion===HYPOTHESIS_FREEZE_VERSION;
+}
+function isLegacyHistoricalQraTrade(t){
+  return isQraLabTrade(t) && Number(t?.openedAt||0)>=QRA_LEGACY_STARTED_AT && !isStrictOosTrade(t);
 }
 function repairQraLabContinuity(){
   let repaired=0;
@@ -428,7 +447,7 @@ async function buildQraLabSnapshot(side,openedAt,interval,riskCash,capital){
   const blocked=side==="short"&&regime.state==="ALCISTA",exposure=qraExposureSnapshot(side,openedAt);
   const qra03Virtual=qra03VirtualDecision(exposure,riskCash,capital);
   const marketBenchmark={version:MARKET_BENCHMARK_VERSION,asset:"BTC",side,interval:interval||null,entryPrice:btcRef.price,entryAsOf:btcRef.asOf,exitPrice:null,exitAsOf:null,directionalReturnPct:null,benchmarkR:null,excessR:null,status:btcRef.price?"tracking":"missing-entry"};
-  return {version:QRA_LAB_VERSION,evaluatedAt:Date.now(),sampleStartedAt:QRA_LAB_STARTED_AT,hypothesisFreezeVersion:HYPOTHESIS_FREEZE_VERSION,btcRegime:regime.state,btcClose:regime.close,btcAsOf:regime.asOf,rule:regime.rule,qra01Accepted:!blocked,qra01Reason:blocked?"SHORT bloqueado: BTC ALCISTA":"Aceptada por QRA-01",soloLongAccepted:side==="long",soloLongReason:side==="long"?"Aceptada: LONG":"Rechazada: estrategia Solo LONG",qra03Observation:exposure,qra03Virtual,qra03CapsStudy:{version:QRA03_CAPS_VERSION,startedAt:QRA03_CAPS_STARTED_AT,caps:[...QRA03_CAPS],priority:"score-desc,symbol-asc",sameDirectionOnly:true,mode:"research-only"},marketBenchmark};
+  return {version:QRA_LAB_VERSION,evaluatedAt:Date.now(),sampleStartedAt:STRICT_OOS_STARTED_AT,hypothesisFreezeVersion:HYPOTHESIS_FREEZE_VERSION,btcRegime:regime.state,btcClose:regime.close,btcAsOf:regime.asOf,rule:regime.rule,qra01Accepted:!blocked,qra01Reason:blocked?"SHORT bloqueado: BTC ALCISTA":"Aceptada por QRA-01",soloLongAccepted:side==="long",soloLongReason:side==="long"?"Aceptada: LONG":"Rechazada: estrategia Solo LONG",qra03Observation:exposure,qra03Virtual,qra03CapsStudy:{version:QRA03_CAPS_VERSION,startedAt:QRA03_CAPS_STARTED_AT,caps:[...QRA03_CAPS],priority:"score-desc,symbol-asc",sameDirectionOnly:true,mode:"research-only"},marketBenchmark};
 }
 async function finalizeMarketBenchmark(t){
   const b=t?.qraLab?.marketBenchmark;if(!b||b.status==="complete"||!t.closedAt)return;
@@ -475,15 +494,15 @@ function renderQraLabStats(){
   if(!all.length){box.innerHTML='<div class="notice">Laboratorio QRA listo. La muestra fuera de entrenamiento empezará con las próximas operaciones guardadas.</div>';return;}
   // La frontera OOS es temporal y fija. La reparación de metadatos nunca puede convertir
   // operaciones anteriores al corte en evidencia prospectiva.
-  const strict=all.filter(t=>Number(t.openedAt||0)>=QRA_LAB_STARTED_AT);
-  const historical=all.filter(t=>Number(t.openedAt||0)<QRA_LAB_STARTED_AT);
+  const strict=all.filter(isStrictOosTrade);
+  const historical=all.filter(isLegacyHistoricalQraTrade);
   const x=qraStatsFor(strict), h=qraStatsFor(historical);
   const qra03Closed=x.closed.map(t=>qra03VirtualR(t)).filter(v=>v!==null),qra03R=qra03Closed.reduce((a,b)=>a+b,0);
   const benchmarked=x.closed.filter(t=>t.qraLab?.marketBenchmark?.status==="complete"&&Number.isFinite(Number(t.qraLab.marketBenchmark.benchmarkR)));
   const btcBenchR=benchmarked.reduce((s,t)=>s+Number(t.qraLab.marketBenchmark.benchmarkR||0),0),excessR=benchmarked.reduce((s,t)=>s+Number(t.qraLab.marketBenchmark.excessR||0),0);
   const maxPeers=Math.max(0,...strict.map(t=>Number(t.qraLab?.qra03Observation?.sameDirectionOpen||0)+1));
   const cards=[
-    ["QRA OOS estricta",`${x.closed.length} cerradas · ${strict.filter(t=>t.status==="open").length} abiertas`],
+    ["OOS estricta Aronson · desde 22/8",`${x.closed.length} cerradas · ${strict.filter(t=>t.status==="open").length} abiertas`],
     ["Control CQ · OOS",`${x.controlR>=0?"+":""}${fmt(x.controlR,2)}R`],
     ["QRA-01 · OOS",`${x.qraR>=0?"+":""}${fmt(x.qraR,2)}R`],
     ["Solo LONG · OOS",`${x.soloLongR>=0?"+":""}${fmt(x.soloLongR,2)}R · ${x.soloLong.length} cerradas`],
@@ -491,20 +510,20 @@ function renderQraLabStats(){
     ["QRA-01 + Trailing · OOS",x.trail.length?`${x.trailR>=0?"+":""}${fmt(x.trailR,2)}R · ${x.trail.length} cerradas`:"Esperando"],
     ["Rechazadas QRA-01 · OOS",`${x.rejected.length} · control ${x.rejectedControlR>=0?"+":""}${fmt(x.rejectedControlR,2)}R`],
     ["QRA-03 virtual · OOS",qra03Closed.length?`${qra03R>=0?"+":""}${fmt(qra03R,2)}R · ${qra03Closed.length} cerradas`:"Esperando"],
-    ["Histórico QRA recuperado",`${h.closed.length} cerradas · ${historical.filter(t=>t.status==="open").length} abiertas · NO OOS`],
+    ["QRA histórico 19→22 ago",`${h.closed.length} cerradas · ${historical.filter(t=>t.status==="open").length} abiertas · NO OOS`],
     ["Control CQ · histórico",`${h.controlR>=0?"+":""}${fmt(h.controlR,2)}R`],
     ...QRA03_CAPS.map(cap=>{const z=qra03CapStudy(cap);return [`QRA-03 cap ${cap}`,z.closed.length?`${z.total>=0?"+":""}${fmt(z.total,2)}R · ${z.closed.length} cerradas · ${z.open.length} abiertas`:`Esperando nuevas operaciones`]}),
     ["QRA-03 caps desde",new Date(QRA03_CAPS_STARTED_AT).toLocaleString("es-MX")],
     ["Benchmark BTC · OOS",benchmarked.length?`${btcBenchR>=0?"+":""}${fmt(btcBenchR,2)}R · exceso ${excessR>=0?"+":""}${fmt(excessR,2)}R`:"Esperando"],
     ["Máx. señales misma dirección · OOS",maxPeers],
-    ["Inicio OOS estricto",new Date(QRA_LAB_STARTED_AT).toLocaleString("es-MX")]
+    ["Inicio OOS estricto",new Date(STRICT_OOS_STARTED_AT).toLocaleString("es-MX")]
   ];
   box.innerHTML=cards.map(([k,v])=>`<div class="result-card"><span>${k}</span><strong>${v}</strong></div>`).join("");
   renderQraLabTrades();
 }
 function renderQraLabTrades(){
   const box=$("#qraLabTrades"); if(!box) return;
-  const lab=state.paperTrades.filter(t=>isQraLabTrade(t)&&Number(t.openedAt||0)>=QRA_LAB_STARTED_AT).sort((a,b)=>(b.openedAt||0)-(a.openedAt||0));
+  const lab=state.paperTrades.filter(t=>isStrictOosTrade(t)).sort((a,b)=>(b.openedAt||0)-(a.openedAt||0));
   if(!lab.length){ box.innerHTML='<div class="notice">Todavía no hay operaciones nuevas del Laboratorio QRA.</div>'; return; }
   box.innerHTML=lab.map(t=>{
     const actual=qraActualR(t), ladder=qraBranchR(t,"ladder"), trail=qraBranchR(t,"trailing025");
@@ -931,7 +950,7 @@ function compactClosedTradeRecord(t){
       trailing025:ec.trailing025?{status:ec.trailing025.status,resultR:ec.trailing025.resultR,closedAt:ec.trailing025.closedAt,maxR:ec.trailing025.maxR}:null
     }:null,
     qraLab:q&&Object.keys(q).length?{
-      version:q.version||QRA_LAB_VERSION,sampleStartedAt:Number(q.sampleStartedAt||QRA_LAB_STARTED_AT),hypothesisFreezeVersion:q.hypothesisFreezeVersion||rm.hypothesisFreezeVersion||HYPOTHESIS_FREEZE_VERSION,
+      version:q.version||QRA_LAB_VERSION,sampleStartedAt:Number(q.sampleStartedAt||(Number(t.openedAt||0)>=STRICT_OOS_STARTED_AT?STRICT_OOS_STARTED_AT:QRA_LAB_STARTED_AT)),hypothesisFreezeVersion:q.hypothesisFreezeVersion||rm.hypothesisFreezeVersion||HYPOTHESIS_FREEZE_VERSION,
       btcRegime:q.btcRegime||"DESCONOCIDO",qra01Accepted:q.qra01Accepted!==false,soloLongAccepted:q.soloLongAccepted??(t.side==="long"),
       qra03Observation:{sameDirectionOpen:Number(obs.sameDirectionOpen||0),sameDirectionRiskCash:Number(obs.sameDirectionRiskCash||0)},
       qra03Virtual:{version:q3.version||QRA03_VIRTUAL_VERSION,multiplier:q3.multiplier??null,virtualRiskCash:q3.virtualRiskCash??null,accepted:q3.accepted??null},

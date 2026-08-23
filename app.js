@@ -1,5 +1,5 @@
 
-// v6.10.2 · continuidad QRA reparada + QRA-03 caps prospectivos · sin cambios de estrategia
+// v6.10.3 · separación histórica vs OOS estricta + QRA-03 caps prospectivos · sin cambios de estrategia
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -25,7 +25,7 @@ const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS",
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const QRA_LAB_VERSION = "QRA-OOS-1";
-const APP_VERSION = "6.10.2";
+const APP_VERSION = "6.10.3";
 const RESEARCH_GENERATION = "ARONSON-QRA-2026-08-22-1";
 const HYPOTHESIS_FREEZE_VERSION = "ARONSON-HYPOTHESES-2026-08-22-1";
 const QRA03_VIRTUAL_VERSION = "QRA03-VIRTUAL-1";
@@ -457,49 +457,54 @@ function qra03CapStudy(cap){
 }
 function qraActualR(t){ return t.status!=="open"&&t.exit!=null?signedRFromPrice(t,t.exit):null; }
 function qraBranchR(t,key){ const b=t.exitComparison?.[key]; return b?.status==="closed"?Number(b.resultR||0):null; }
-function renderQraLabStats(){
-  const box=$("#qraLabStats"); if(!box) return;
-  const lab=state.paperTrades.filter(t=>isQraLabTrade(t));
-  if(!lab.length){
-    box.innerHTML='<div class="notice">Laboratorio QRA listo. La muestra fuera de entrenamiento empezará con las próximas operaciones guardadas.</div>';
-    return;
-  }
+function qraStatsFor(lab){
   const closed=lab.filter(t=>t.status!=="open"&&t.exit!=null);
-  const accepted=closed.filter(t=>t.qraLab.qra01Accepted);
-  const rejected=closed.filter(t=>!t.qraLab.qra01Accepted);
+  const accepted=closed.filter(t=>t.qraLab?.qra01Accepted);
+  const rejected=closed.filter(t=>!t.qraLab?.qra01Accepted);
   const controlR=closed.reduce((s,t)=>s+Number(qraActualR(t)||0),0);
   const qraR=accepted.reduce((s,t)=>s+Number(qraActualR(t)||0),0);
   const soloLong=closed.filter(t=>(t.qraLab?.soloLongAccepted ?? (t.side==="long")));
   const soloLongR=soloLong.reduce((s,t)=>s+Number(qraActualR(t)||0),0);
   const ladder=accepted.map(t=>qraBranchR(t,"ladder")).filter(v=>v!==null);
   const trail=accepted.map(t=>qraBranchR(t,"trailing025")).filter(v=>v!==null);
-  const ladderR=ladder.reduce((a,b)=>a+b,0),trailR=trail.reduce((a,b)=>a+b,0);
-  const rejectedControlR=rejected.reduce((s,t)=>s+Number(qraActualR(t)||0),0);
-  const qra03Closed=closed.map(t=>qra03VirtualR(t)).filter(v=>v!==null),qra03R=qra03Closed.reduce((a,b)=>a+b,0);
-  const benchmarked=closed.filter(t=>t.qraLab?.marketBenchmark?.status==="complete"&&Number.isFinite(Number(t.qraLab.marketBenchmark.benchmarkR)));
+  return {closed,accepted,rejected,controlR,qraR,soloLong,soloLongR,ladder,trail,ladderR:ladder.reduce((a,b)=>a+b,0),trailR:trail.reduce((a,b)=>a+b,0),rejectedControlR:rejected.reduce((s,t)=>s+Number(qraActualR(t)||0),0)};
+}
+function renderQraLabStats(){
+  const box=$("#qraLabStats"); if(!box) return;
+  const all=state.paperTrades.filter(t=>isQraLabTrade(t));
+  if(!all.length){box.innerHTML='<div class="notice">Laboratorio QRA listo. La muestra fuera de entrenamiento empezará con las próximas operaciones guardadas.</div>';return;}
+  // La frontera OOS es temporal y fija. La reparación de metadatos nunca puede convertir
+  // operaciones anteriores al corte en evidencia prospectiva.
+  const strict=all.filter(t=>Number(t.openedAt||0)>=QRA_LAB_STARTED_AT);
+  const historical=all.filter(t=>Number(t.openedAt||0)<QRA_LAB_STARTED_AT);
+  const x=qraStatsFor(strict), h=qraStatsFor(historical);
+  const qra03Closed=x.closed.map(t=>qra03VirtualR(t)).filter(v=>v!==null),qra03R=qra03Closed.reduce((a,b)=>a+b,0);
+  const benchmarked=x.closed.filter(t=>t.qraLab?.marketBenchmark?.status==="complete"&&Number.isFinite(Number(t.qraLab.marketBenchmark.benchmarkR)));
   const btcBenchR=benchmarked.reduce((s,t)=>s+Number(t.qraLab.marketBenchmark.benchmarkR||0),0),excessR=benchmarked.reduce((s,t)=>s+Number(t.qraLab.marketBenchmark.excessR||0),0);
-  const maxPeers=Math.max(0,...lab.map(t=>Number(t.qraLab?.qra03Observation?.sameDirectionOpen||0)+1));
+  const maxPeers=Math.max(0,...strict.map(t=>Number(t.qraLab?.qra03Observation?.sameDirectionOpen||0)+1));
   const cards=[
-    ["Muestra QRA",`${closed.length} cerradas · ${lab.filter(t=>t.status==="open").length} abiertas`],
-    ["Control CQ",`${controlR>=0?"+":""}${fmt(controlR,2)}R`],
-    ["QRA-01",`${qraR>=0?"+":""}${fmt(qraR,2)}R`],
-    ["Solo LONG",`${soloLongR>=0?"+":""}${fmt(soloLongR,2)}R · ${soloLong.length} cerradas`],
-    ["QRA-01 + Escalera",ladder.length?`${ladderR>=0?"+":""}${fmt(ladderR,2)}R · ${ladder.length} cerradas`:"Esperando"],
-    ["QRA-01 + Trailing",trail.length?`${trailR>=0?"+":""}${fmt(trailR,2)}R · ${trail.length} cerradas`:"Esperando"],
-    ["Rechazadas QRA-01",`${rejected.length} · control ${rejectedControlR>=0?"+":""}${fmt(rejectedControlR,2)}R`],
-    ["QRA-03 virtual",qra03Closed.length?`${qra03R>=0?"+":""}${fmt(qra03R,2)}R · ${qra03Closed.length} cerradas`:"Esperando"],
-    ...QRA03_CAPS.map(cap=>{const x=qra03CapStudy(cap);return [`QRA-03 cap ${cap}`,x.closed.length?`${x.total>=0?"+":""}${fmt(x.total,2)}R · ${x.closed.length} cerradas · ${x.open.length} abiertas`:`Esperando nuevas operaciones`]}),
+    ["QRA OOS estricta",`${x.closed.length} cerradas · ${strict.filter(t=>t.status==="open").length} abiertas`],
+    ["Control CQ · OOS",`${x.controlR>=0?"+":""}${fmt(x.controlR,2)}R`],
+    ["QRA-01 · OOS",`${x.qraR>=0?"+":""}${fmt(x.qraR,2)}R`],
+    ["Solo LONG · OOS",`${x.soloLongR>=0?"+":""}${fmt(x.soloLongR,2)}R · ${x.soloLong.length} cerradas`],
+    ["QRA-01 + Escalera · OOS",x.ladder.length?`${x.ladderR>=0?"+":""}${fmt(x.ladderR,2)}R · ${x.ladder.length} cerradas`:"Esperando"],
+    ["QRA-01 + Trailing · OOS",x.trail.length?`${x.trailR>=0?"+":""}${fmt(x.trailR,2)}R · ${x.trail.length} cerradas`:"Esperando"],
+    ["Rechazadas QRA-01 · OOS",`${x.rejected.length} · control ${x.rejectedControlR>=0?"+":""}${fmt(x.rejectedControlR,2)}R`],
+    ["QRA-03 virtual · OOS",qra03Closed.length?`${qra03R>=0?"+":""}${fmt(qra03R,2)}R · ${qra03Closed.length} cerradas`:"Esperando"],
+    ["Histórico QRA recuperado",`${h.closed.length} cerradas · ${historical.filter(t=>t.status==="open").length} abiertas · NO OOS`],
+    ["Control CQ · histórico",`${h.controlR>=0?"+":""}${fmt(h.controlR,2)}R`],
+    ...QRA03_CAPS.map(cap=>{const z=qra03CapStudy(cap);return [`QRA-03 cap ${cap}`,z.closed.length?`${z.total>=0?"+":""}${fmt(z.total,2)}R · ${z.closed.length} cerradas · ${z.open.length} abiertas`:`Esperando nuevas operaciones`]}),
     ["QRA-03 caps desde",new Date(QRA03_CAPS_STARTED_AT).toLocaleString("es-MX")],
-    ["Benchmark BTC",benchmarked.length?`${btcBenchR>=0?"+":""}${fmt(btcBenchR,2)}R · exceso ${excessR>=0?"+":""}${fmt(excessR,2)}R`:"Esperando"],
-    ["Máx. señales misma dirección",maxPeers],
-    ["Inicio fuera de muestra",new Date(QRA_LAB_STARTED_AT).toLocaleString("es-MX")]
+    ["Benchmark BTC · OOS",benchmarked.length?`${btcBenchR>=0?"+":""}${fmt(btcBenchR,2)}R · exceso ${excessR>=0?"+":""}${fmt(excessR,2)}R`:"Esperando"],
+    ["Máx. señales misma dirección · OOS",maxPeers],
+    ["Inicio OOS estricto",new Date(QRA_LAB_STARTED_AT).toLocaleString("es-MX")]
   ];
   box.innerHTML=cards.map(([k,v])=>`<div class="result-card"><span>${k}</span><strong>${v}</strong></div>`).join("");
   renderQraLabTrades();
 }
 function renderQraLabTrades(){
   const box=$("#qraLabTrades"); if(!box) return;
-  const lab=state.paperTrades.filter(t=>isQraLabTrade(t)).sort((a,b)=>(b.openedAt||0)-(a.openedAt||0));
+  const lab=state.paperTrades.filter(t=>isQraLabTrade(t)&&Number(t.openedAt||0)>=QRA_LAB_STARTED_AT).sort((a,b)=>(b.openedAt||0)-(a.openedAt||0));
   if(!lab.length){ box.innerHTML='<div class="notice">Todavía no hay operaciones nuevas del Laboratorio QRA.</div>'; return; }
   box.innerHTML=lab.map(t=>{
     const actual=qraActualR(t), ladder=qraBranchR(t,"ladder"), trail=qraBranchR(t,"trailing025");

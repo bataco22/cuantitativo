@@ -1,5 +1,5 @@
 
-// v6.10.6 · point-in-time estricto + trailing intravela conservador
+// v6.10.7 · almacenamiento robusto + trailing prospectivo 0.20/0.25 intravela conservador
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -25,7 +25,7 @@ const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS",
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const QRA_LAB_VERSION = "QRA-OOS-1";
-const APP_VERSION = "6.10.6";
+const APP_VERSION = "6.10.7";
 const RESEARCH_GENERATION = "ARONSON-QRA-2026-08-22-1";
 const HYPOTHESIS_FREEZE_VERSION = "ARONSON-HYPOTHESES-2026-08-22-1";
 const QRA03_VIRTUAL_VERSION = "QRA03-VIRTUAL-1";
@@ -35,7 +35,7 @@ const MARKET_BENCHMARK_VERSION = "BTC-PRIOR-CLOSE-1";
 const HYPOTHESIS_REGISTRY = Object.freeze({
   qra01:"Bloquear SHORT cuando BTC esté ALCISTA según prev-close-3bar-breakout.",
   qra03:"Reducir riesgo marginal cuando aumenta la exposición de la misma dirección; visor virtual, nunca modifica el control.",
-  exits:"Control 3R frente a Escalera y Trailing 0.25R como comparadores virtuales.",
+  exits:"Control 3R frente a Escalera y Trailing 0.20R/0.25R como comparadores virtuales prospectivos.",
   score:"Evaluar prospectivamente calibración y aporte incremental de los componentes del score.",
   benchmark:"Medir rendimiento de Quant frente a BTC direccional durante la misma ventana, sin usarlo para ejecutar."
 });
@@ -49,6 +49,10 @@ const QRA03_CAPS_FROZEN_STARTED_AT = 1787509148837;
 const PROSPECTIVE_STARTED_AT = STRICT_OOS_STARTED_AT;
 const QRA_LAB_STARTED_AT = QRA_LEGACY_STARTED_AT;
 const QRA03_CAPS_STARTED_AT = QRA03_CAPS_FROZEN_STARTED_AT;
+// v6.10.7: cohorte prospectiva de salidas 0.20R vs 0.25R. Se fija una sola vez
+// en el primer arranque de esta versión y se conserva en respaldos/localStorage.
+const TRAILING_AB_STARTED_AT = Number(localStorage.getItem("quant_trailing_ab_started_at")||0) || Date.now();
+localStorage.setItem("quant_trailing_ab_started_at",String(TRAILING_AB_STARTED_AT));
 localStorage.setItem("quant_aronson_qra_started_at",String(PROSPECTIVE_STARTED_AT));
 localStorage.setItem("quant_qra_lab_started_at",String(QRA_LAB_STARTED_AT));
 localStorage.setItem("quant_qra03_caps_started_at",String(QRA03_CAPS_STARTED_AT));
@@ -343,7 +347,7 @@ function buildResearchSnapshot(a,side){
   };
 }
 function buildResearchMeta(){
-  return {strategyVersion:APP_VERSION,researchGeneration:RESEARCH_GENERATION,prospectiveStartedAt:PROSPECTIVE_STARTED_AT,openedAfterHypothesisFreeze:true,hypothesisFreezeVersion:HYPOTHESIS_FREEZE_VERSION,hypotheses:Object.keys(HYPOTHESIS_REGISTRY)};
+  return {strategyVersion:APP_VERSION,researchGeneration:RESEARCH_GENERATION,prospectiveStartedAt:PROSPECTIVE_STARTED_AT,openedAfterHypothesisFreeze:true,hypothesisFreezeVersion:HYPOTHESIS_FREEZE_VERSION,hypotheses:Object.keys(HYPOTHESIS_REGISTRY),trailingABStartedAt:TRAILING_AB_STARTED_AT};
 }
 
 async function refreshHomeTimeframe(interval){
@@ -485,8 +489,17 @@ function qraStatsFor(lab){
   const soloLong=closed.filter(t=>(t.qraLab?.soloLongAccepted ?? (t.side==="long")));
   const soloLongR=soloLong.reduce((s,t)=>s+Number(qraActualR(t)||0),0);
   const ladder=accepted.map(t=>qraBranchR(t,"ladder")).filter(v=>v!==null);
+  const trail020=accepted.filter(t=>Number(t.openedAt||0)>=TRAILING_AB_STARTED_AT).map(t=>qraBranchR(t,"trailing020")).filter(v=>v!==null);
   const trail=accepted.map(t=>qraBranchR(t,"trailing025")).filter(v=>v!==null);
-  return {closed,accepted,rejected,controlR,qraR,soloLong,soloLongR,ladder,trail,ladderR:ladder.reduce((a,b)=>a+b,0),trailR:trail.reduce((a,b)=>a+b,0),rejectedControlR:rejected.reduce((s,t)=>s+Number(qraActualR(t)||0),0)};
+  return {closed,accepted,rejected,controlR,qraR,soloLong,soloLongR,ladder,trail020,trail,ladderR:ladder.reduce((a,b)=>a+b,0),trail020R:trail020.reduce((a,b)=>a+b,0),trailR:trail.reduce((a,b)=>a+b,0),rejectedControlR:rejected.reduce((s,t)=>s+Number(qraActualR(t)||0),0)};
+}
+function trailingAbStudy(){
+  const pool=state.paperTrades.filter(t=>isStrictOosTrade(t)&&Number(t.openedAt||0)>=TRAILING_AB_STARTED_AT);
+  const closed=pool.filter(t=>t.status!=="open");
+  const r020=pool.map(t=>qraBranchR(t,"trailing020")).filter(v=>v!==null);
+  const r025=pool.map(t=>qraBranchR(t,"trailing025")).filter(v=>v!==null);
+  const sum=a=>a.reduce((x,y)=>x+Number(y||0),0);
+  return {pool,closed,r020,r025,total020:sum(r020),total025:sum(r025)};
 }
 function renderQraLabStats(){
   const box=$("#qraLabStats"); if(!box) return;
@@ -496,7 +509,7 @@ function renderQraLabStats(){
   // operaciones anteriores al corte en evidencia prospectiva.
   const strict=all.filter(isStrictOosTrade);
   const historical=all.filter(isLegacyHistoricalQraTrade);
-  const x=qraStatsFor(strict), h=qraStatsFor(historical);
+  const x=qraStatsFor(strict), h=qraStatsFor(historical), ab=trailingAbStudy();
   const qra03Closed=x.closed.map(t=>qra03VirtualR(t)).filter(v=>v!==null),qra03R=qra03Closed.reduce((a,b)=>a+b,0);
   const benchmarked=x.closed.filter(t=>t.qraLab?.marketBenchmark?.status==="complete"&&Number.isFinite(Number(t.qraLab.marketBenchmark.benchmarkR)));
   const btcBenchR=benchmarked.reduce((s,t)=>s+Number(t.qraLab.marketBenchmark.benchmarkR||0),0),excessR=benchmarked.reduce((s,t)=>s+Number(t.qraLab.marketBenchmark.excessR||0),0);
@@ -506,6 +519,9 @@ function renderQraLabStats(){
     ["Control CQ · OOS",`${x.controlR>=0?"+":""}${fmt(x.controlR,2)}R`],
     ["QRA-01 · OOS",`${x.qraR>=0?"+":""}${fmt(x.qraR,2)}R`],
     ["Solo LONG · OOS",`${x.soloLongR>=0?"+":""}${fmt(x.soloLongR,2)}R · ${x.soloLong.length} cerradas`],
+    ["Trailing 0.20R · A/B OOS",ab.r020.length?`${ab.total020>=0?"+":""}${fmt(ab.total020,2)}R · ${ab.r020.length} cerradas`:`Esperando nuevas operaciones`],
+    ["Trailing 0.25R · A/B OOS",ab.r025.length?`${ab.total025>=0?"+":""}${fmt(ab.total025,2)}R · ${ab.r025.length} cerradas`:`Esperando nuevas operaciones`],
+    ["A/B trailing desde",new Date(TRAILING_AB_STARTED_AT).toLocaleString("es-MX")],
     ["QRA-01 + Escalera · OOS",x.ladder.length?`${x.ladderR>=0?"+":""}${fmt(x.ladderR,2)}R · ${x.ladder.length} cerradas`:"Esperando"],
     ["QRA-01 + Trailing · OOS",x.trail.length?`${x.trailR>=0?"+":""}${fmt(x.trailR,2)}R · ${x.trail.length} cerradas`:"Esperando"],
     ["Rechazadas QRA-01 · OOS",`${x.rejected.length} · control ${x.rejectedControlR>=0?"+":""}${fmt(x.rejectedControlR,2)}R`],
@@ -526,10 +542,10 @@ function renderQraLabTrades(){
   const lab=state.paperTrades.filter(t=>isStrictOosTrade(t)).sort((a,b)=>(b.openedAt||0)-(a.openedAt||0));
   if(!lab.length){ box.innerHTML='<div class="notice">Todavía no hay operaciones nuevas del Laboratorio QRA.</div>'; return; }
   box.innerHTML=lab.map(t=>{
-    const actual=qraActualR(t), ladder=qraBranchR(t,"ladder"), trail=qraBranchR(t,"trailing025");
+    const actual=qraActualR(t), ladder=qraBranchR(t,"ladder"), trail020=qraBranchR(t,"trailing020"), trail=qraBranchR(t,"trailing025");
     const status=t.status==="open"?"ABIERTA":(actual!=null?`${actual>=0?"+":""}${fmt(actual,2)}R`:"CERRADA");
     const val=v=>v==null?"En seguimiento":`${v>=0?"+":""}${fmt(v,2)}R`;
-    return `<div class="result-card qra-trade-card"><span>${new Date(t.openedAt).toLocaleString("es-MX")} · ${t.interval||""}</span><strong>${t.symbol} · ${(t.side||"").toUpperCase()} · ${status}</strong><div class="qra-trade-lines"><div>CQ Control: <b>${status}</b></div><div>Solo LONG: <b>${(t.qraLab.soloLongAccepted ?? t.side==="long")?"ACEPTA":"RECHAZA"}</b></div><div>QRA-01: <b>${t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"}</b> · BTC ${t.qraLab.btcRegime}</div><div>QRA + Escalera: <b>${t.qraLab.qra01Accepted?val(ladder):"NO TOMADA"}</b></div><div>QRA + Trailing: <b>${t.qraLab.qra01Accepted?val(trail):"NO TOMADA"}</b></div><div>QRA-03 virtual: <b>${fmt(Number(t.qraLab.qra03Virtual?.multiplier??1)*100,0)}%</b> del riesgo · ${Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1} misma dirección</div><div>Benchmark BTC: <b>${t.qraLab.marketBenchmark?.status==="complete"?`${Number(t.qraLab.marketBenchmark.excessR)>=0?"+":""}${fmt(t.qraLab.marketBenchmark.excessR,2)}R exceso`:"En seguimiento"}</b></div></div></div>`;
+    return `<div class="result-card qra-trade-card"><span>${new Date(t.openedAt).toLocaleString("es-MX")} · ${t.interval||""}</span><strong>${t.symbol} · ${(t.side||"").toUpperCase()} · ${status}</strong><div class="qra-trade-lines"><div>CQ Control: <b>${status}</b></div><div>Solo LONG: <b>${(t.qraLab.soloLongAccepted ?? t.side==="long")?"ACEPTA":"RECHAZA"}</b></div><div>QRA-01: <b>${t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"}</b> · BTC ${t.qraLab.btcRegime}</div><div>QRA + Escalera: <b>${t.qraLab.qra01Accepted?val(ladder):"NO TOMADA"}</b></div><div>Trailing 0.20R A/B: <b>${Number(t.openedAt||0)>=TRAILING_AB_STARTED_AT?val(trail020):"PRE-CORTE"}</b></div><div>Trailing 0.25R A/B: <b>${Number(t.openedAt||0)>=TRAILING_AB_STARTED_AT?val(trail):"PRE-CORTE"}</b></div><div>QRA + Trailing 0.25R: <b>${t.qraLab.qra01Accepted?val(trail):"NO TOMADA"}</b></div><div>QRA-03 virtual: <b>${fmt(Number(t.qraLab.qra03Virtual?.multiplier??1)*100,0)}%</b> del riesgo · ${Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1} misma dirección</div><div>Benchmark BTC: <b>${t.qraLab.marketBenchmark?.status==="complete"?`${Number(t.qraLab.marketBenchmark.excessR)>=0?"+":""}${fmt(t.qraLab.marketBenchmark.excessR,2)}R exceso`:"En seguimiento"}</b></div></div></div>`;
   }).join("");
 }
 
@@ -889,6 +905,43 @@ $("#calcPositionBtn").onclick=()=>{
 };
 
 
+const OPEN_EVIDENCE_WINDOW=24;
+function mergeRPathSummaryRow(t,row){
+  if(!Array.isArray(row)) return;
+  const prev=t.rPathSummary||{};
+  const ts=Number(row[0]),best=Number(row[2]),worst=Number(row[3]),closeR=Number(row[4]);
+  const rows=Math.max(Number(prev.rows||0),Number(t.rPathCount||0));
+  t.rPathSummary={
+    rows,
+    firstAt:prev.firstAt??(Number.isFinite(ts)?ts:null),
+    lastAt:Number.isFinite(ts)?ts:(prev.lastAt??null),
+    maxBestR:Number.isFinite(best)?Math.max(Number.isFinite(Number(prev.maxBestR))?Number(prev.maxBestR):-Infinity,best):(prev.maxBestR??null),
+    minWorstR:Number.isFinite(worst)?Math.min(Number.isFinite(Number(prev.minWorstR))?Number(prev.minWorstR):Infinity,worst):(prev.minWorstR??null),
+    lastCloseR:Number.isFinite(closeR)?closeR:(prev.lastCloseR??null),
+    terminal:row[6]?String(row[6]):(prev.terminal||""),
+    maxLevelR:Array.isArray(t.rLevelsHit)&&t.rLevelsHit.length?Math.max(...t.rLevelsHit.map(Number).filter(Number.isFinite)):Number(prev.maxLevelR||0)
+  };
+}
+function compactOpenEvidenceForStorage(windowSize=OPEN_EVIDENCE_WINDOW){
+  const n=Math.max(4,Number(windowSize)||OPEN_EVIDENCE_WINDOW);
+  for(const t of state.paperTrades){
+    if(t.status!=="open" && !hasVirtualOpen(t)) continue;
+    if(Array.isArray(t.candleLog) && t.candleLog.length>n){
+      const removed=t.candleLog.length-n;
+      t.candleLog=t.candleLog.slice(-n);
+      t.candleLogDropped=Number(t.candleLogDropped||0)+removed;
+      t.candleLogWindowed=true;
+    }
+    if(Array.isArray(t.rPath) && t.rPath.length>n){
+      const old=t.rPath.slice(0,-n);
+      for(const row of old) mergeRPathSummaryRow(t,row);
+      const removed=t.rPath.length-n;
+      t.rPath=t.rPath.slice(-n);
+      t.rPathDropped=Number(t.rPathDropped||0)+removed;
+      t.rPathWindowed=true;
+    }
+  }
+}
 function compactClosedCandleLogsForStorage(){
   // Primera capa: elimina OHLCV bruto de operaciones cerradas. rPath se conserva.
   const closed=state.paperTrades
@@ -932,7 +985,7 @@ function compactClosedRPathsForStorage(keepRecentFull=50){
   });
 }
 function compactClosedTradeRecord(t){
-  if(!t || t.status==="open" || t.storageCompactVersion==="6.10.0") return t;
+  if(!t || t.status==="open" || t.storageCompactVersion==="6.10.7") return t;
   const rsum=(Array.isArray(t.rPath)&&t.rPath.length?summarizeRPath(t):t.rPathSummary)||null;
   const s=t.snapshot||{},rm=t.researchMeta||{},ec=t.exitComparison||{},q=t.qraLab||{};
   const obs=q.qra03Observation||{},q3=q.qra03Virtual||{},bm=q.marketBenchmark||{};
@@ -944,9 +997,10 @@ function compactClosedTradeRecord(t){
       rsi:s.rsi,adx:s.adx,atrPct:s.atrPct,volumeRatio:s.volumeRatio,trend:s.trend,
       factorScores:s.factorScores||null,weights:s.weights||null,scoreAlgorithmVersion:s.scoreAlgorithmVersion||null
     },
-    researchMeta:{researchGeneration:rm.researchGeneration||null,hypothesisFreezeVersion:rm.hypothesisFreezeVersion||null},
+    researchMeta:{researchGeneration:rm.researchGeneration||null,hypothesisFreezeVersion:rm.hypothesisFreezeVersion||null,trailingABStartedAt:Number(rm.trailingABStartedAt||TRAILING_AB_STARTED_AT)},
     exitComparison:ec&&Object.keys(ec).length?{
       ladder:ec.ladder?{status:ec.ladder.status,resultR:ec.ladder.resultR,closedAt:ec.ladder.closedAt,maxR:ec.ladder.maxR}:null,
+      trailing020:ec.trailing020?{status:ec.trailing020.status,resultR:ec.trailing020.resultR,closedAt:ec.trailing020.closedAt,maxR:ec.trailing020.maxR}:null,
       trailing025:ec.trailing025?{status:ec.trailing025.status,resultR:ec.trailing025.resultR,closedAt:ec.trailing025.closedAt,maxR:ec.trailing025.maxR}:null
     }:null,
     qraLab:q&&Object.keys(q).length?{
@@ -961,7 +1015,7 @@ function compactClosedTradeRecord(t){
     rLevelsHit:Array.isArray(t.rLevelsHit)?t.rLevelsHit:[],
     candleLog:[],candleLogCount:Number(t.candleLogCount||(Array.isArray(t.candleLog)?t.candleLog.length:0)||0),candleLogCompacted:true,
     rPath:[],rPathCount:Number(t.rPathCount||(Array.isArray(t.rPath)?t.rPath.length:0)||0),rPathCompacted:true,
-    storageCompactVersion:"6.10.0"
+    storageCompactVersion:"6.10.7"
   };
   if(t.notes && !/^AUTO TOP 100/i.test(String(t.notes))) out.notes=t.notes;
   if(t.scoreType && t.scoreType!=="auto-score-top100") out.scoreType=t.scoreType;
@@ -976,6 +1030,7 @@ function storagePayload(){ return JSON.stringify(state.paperTrades); }
 function setPaperStorage(payload){ localStorage.setItem("quant_paper_trades",payload); return true; }
 function isQuotaError(e){ return e?.name==="QuotaExceededError" || /quota|storage/i.test(String(e?.message||e)); }
 function savePaperState(){
+  compactOpenEvidenceForStorage();
   let payload=storagePayload();
   try{return setPaperStorage(payload)}catch(e){if(!isQuotaError(e))throw e;}
 
@@ -994,23 +1049,24 @@ function savePaperState(){
   // Capa 4 de emergencia: consolida también las cerradas recientes; NUNCA toca abiertas.
   compactClosedTradeRecordsForStorage(0);payload=storagePayload();
   try{return setPaperStorage(payload)}catch(e2){
-    console.error("Centro Quant: almacenamiento local lleno incluso después de compactación v6.10.0",e2);
-    throw new Error("Almacenamiento local lleno aun después de consolidar todas las cerradas. Las operaciones abiertas siguen intactas en memoria; exporta un respaldo antes de liberar datos del navegador.");
+    console.error("Centro Quant: almacenamiento local lleno incluso después de compactación v6.10.7",e2);
+    throw new Error("Almacenamiento local lleno aun después de compactar abiertas y consolidar cerradas. Exporta un respaldo antes de liberar datos del navegador.");
   }
 }
 function runStorageMaintenance(){
   // iOS/Safari suele limitar localStorage a ~5 MB y almacena strings en una representación
   // costosa. Si el ledger supera este umbral, compacta sólo cerradas antes de llegar a cuota.
   try{
+    compactOpenEvidenceForStorage();
     const before=storagePayload().length;
-    if(before<1800000) return;
+    if(before<1500000) return;
     compactClosedCandleLogsForStorage();
     compactClosedRPathsForStorage(20);
     compactClosedTradeRecordsForStorage(20);
     let payload=storagePayload();
-    if(payload.length>1900000){compactClosedTradeRecordsForStorage(0);payload=storagePayload();}
+    if(payload.length>1700000){compactClosedTradeRecordsForStorage(0);payload=storagePayload();}
     setPaperStorage(payload);
-    localStorage.setItem("quant_storage_maintenance",JSON.stringify({version:APP_VERSION,at:Date.now(),beforeChars:before,afterChars:payload.length,open:state.paperTrades.filter(t=>t.status==="open").length,closed:state.paperTrades.filter(t=>t.status!=="open").length}));
+    localStorage.setItem("quant_storage_maintenance",JSON.stringify({version:APP_VERSION,at:Date.now(),beforeChars:before,afterChars:payload.length,open:state.paperTrades.filter(t=>t.status==="open").length,closed:state.paperTrades.filter(t=>t.status!=="open").length,openEvidenceWindow:OPEN_EVIDENCE_WINDOW}));
   }catch(e){console.warn("Centro Quant: mantenimiento preventivo de almacenamiento no pudo completarse",e);}
 }
 function paperLevels(entry,side,stopMode,stopValue,targetMode,targetValue){
@@ -1094,18 +1150,20 @@ function updateTradeMFE(t,candle){updateTradeExcursions(t,candle)}
 // Registro compacto de velas por operación para poder reproducir después cualquier
 // regla de salida (BE, trailing, escalera, etc.) sin depender sólo del MFE.
 // Formato de cada fila: [t, open, high, low, close, volume, closeTime].
-const PAPER_CANDLE_LOG_MAX=3000;
+const PAPER_CANDLE_LOG_MAX=OPEN_EVIDENCE_WINDOW;
 function appendTradeCandle(t,c){
   if(!Array.isArray(t.candleLog)) t.candleLog=[];
   t.candleFormat="t,o,h,l,c,v,ct";
   const row=[+c.t,+c.o,+c.h,+c.l,+c.c,+c.v,+c.ct];
   const last=t.candleLog.at(-1);
   if(last && +last[0]===+c.t){ t.candleLog[t.candleLog.length-1]=row; return; }
-  if(t.candleLog.length>=PAPER_CANDLE_LOG_MAX){
-    t.candleLogTruncated=true;
-    return;
-  }
+  t.candleLogCount=Number(t.candleLogCount||0)+1;
   t.candleLog.push(row);
+  if(t.candleLog.length>PAPER_CANDLE_LOG_MAX){
+    t.candleLog.shift();
+    t.candleLogDropped=Number(t.candleLogDropped||0)+1;
+    t.candleLogWindowed=true;
+  }
 }
 // Recorrido compacto por vela expresado en R. No cambia entradas ni cierres; solo
 // agrega evidencia para reconstruir después BE, trailing o escalera.
@@ -1137,8 +1195,14 @@ function appendTradeRPath(t,c,terminal=""){
   const row=[+c.t,+oR.toFixed(6),+bestR.toFixed(6),+worstR.toFixed(6),+cR.toFixed(6),newLevels,terminal||""];
   const last=t.rPath.at(-1);
   if(last && +last[0]===+c.t){ t.rPath[t.rPath.length-1]=row; return; }
-  if(t.rPath.length>=PAPER_CANDLE_LOG_MAX){ t.rPathTruncated=true; return; }
+  t.rPathCount=Number(t.rPathCount||0)+1;
   t.rPath.push(row);
+  if(t.rPath.length>PAPER_CANDLE_LOG_MAX){
+    const dropped=t.rPath.shift();
+    mergeRPathSummaryRow(t,dropped);
+    t.rPathDropped=Number(t.rPathDropped||0)+1;
+    t.rPathWindowed=true;
+  }
 }
 
 // Experimento prospectivo de gestión de salida. Las tres variantes comparten
@@ -1146,14 +1210,24 @@ function appendTradeRPath(t,c,terminal=""){
 // siendo el status/exit original; Escalera y Trailing son salidas virtuales.
 function newExitComparison(){
   return {
-    version:"6.8.7",startedAt:Date.now(),
+    version:"6.10.7-TRAILING-AB",startedAt:Date.now(),trailingABStartedAt:TRAILING_AB_STARTED_AT,
     ladder:{status:"open",stopR:-1,resultR:null,closedAt:null,maxR:0},
+    trailing020:{status:"open",stopR:-1,resultR:null,closedAt:null,maxR:0},
     trailing025:{status:"open",stopR:-1,resultR:null,closedAt:null,maxR:0}
   };
 }
+function ensureExitComparison(t){
+  if(!t.exitComparison) t.exitComparison=newExitComparison();
+  if(!t.exitComparison.ladder) t.exitComparison.ladder={status:"open",stopR:-1,resultR:null,closedAt:null,maxR:0};
+  if(Number(t.openedAt||0)>=TRAILING_AB_STARTED_AT && !t.exitComparison.trailing020){
+    t.exitComparison.trailing020={status:"open",stopR:-1,resultR:null,closedAt:null,maxR:0};
+  }
+  if(!t.exitComparison.trailing025) t.exitComparison.trailing025={status:"open",stopR:-1,resultR:null,closedAt:null,maxR:0};
+  return t.exitComparison;
+}
 function hasVirtualOpen(t){
   const x=t.exitComparison;
-  return !!(x && (x.ladder?.status==="open" || x.trailing025?.status==="open"));
+  return !!(x && (x.ladder?.status==="open" || x.trailing020?.status==="open" || x.trailing025?.status==="open"));
 }
 function needsPaperMonitoring(t){ return t.status==="open" || hasVirtualOpen(t); }
 function ladderStopForMaxR(maxR){
@@ -1162,34 +1236,39 @@ function ladderStopForMaxR(maxR){
   if(maxR<2) return 1;
   if(maxR<2.5) return 1.25;
   if(maxR<3) return 2;
-  // Desde 3R, cada nuevo escalón de 0.5R protege el escalón anterior.
   const level=Math.floor((maxR+1e-9)*2)/2;
   return Math.max(2.5,level-0.5);
 }
-function trailing025StopForMaxR(maxR){
+function trailingStepStopForMaxR(maxR,step){
   if(maxR<1) return -1;
-  if(maxR<1.25) return 0;
-  // 1R activa break-even; desde 1.25R cada +0.25R protege el escalón anterior.
-  const level=Math.floor((maxR+1e-9)*4)/4;
-  return Math.max(0,level-0.25);
+  if(maxR<1+step-1e-9) return 0;
+  const level=Math.floor((maxR+1e-9)/step)*step;
+  return Math.max(0,+((level-step).toFixed(10)));
 }
-function processVirtualExitBranch(branch,c,bestR,worstR,kind){
+function trailing025StopForMaxR(maxR){ return trailingStepStopForMaxR(maxR,0.25); }
+function processVirtualExitBranch(branch,c,bestR,worstR,kind,step=0.25){
   if(!branch || branch.status!=="open") return;
-  // Criterio causal/conservador con OHLC: primero se comprueba el stop que ya
-  // estaba activo al comenzar la vela. Los nuevos escalones se activan después.
-  if(worstR<=branch.stopR+1e-9){
-    branch.status="closed"; branch.resultR=branch.stopR; branch.closedAt=+c.t; return;
+  const priorStop=Number(branch.stopR??-1);
+  if(worstR<=priorStop+1e-9){
+    branch.status="closed"; branch.resultR=priorStop; branch.closedAt=+c.t; return;
   }
   branch.maxR=Math.max(Number(branch.maxR||0),bestR);
-  const next=kind==="ladder"?ladderStopForMaxR(branch.maxR):trailing025StopForMaxR(branch.maxR);
-  branch.stopR=Math.max(Number(branch.stopR??-1),next);
+  const candidate=kind==="ladder"?ladderStopForMaxR(branch.maxR):trailingStepStopForMaxR(branch.maxR,step);
+  const nextStop=Math.max(priorStop,candidate);
+  branch.stopR=nextStop;
+  // Misma convención conservadora del backtest v6.10.6: si la vela que eleva
+  // el trailing también atraviesa el nuevo stop, se considera ejecutado ahí.
+  if(worstR<=nextStop+1e-9){
+    branch.status="closed"; branch.resultR=nextStop; branch.closedAt=+c.t;
+  }
 }
 function processExitComparison(t,c){
-  if(!t.exitComparison) return;
+  const x=ensureExitComparison(t);
   const hR=signedRFromPrice(t,c.h),lR=signedRFromPrice(t,c.l);
   const bestR=Math.max(hR,lR),worstR=Math.min(hR,lR);
-  processVirtualExitBranch(t.exitComparison.ladder,c,bestR,worstR,"ladder");
-  processVirtualExitBranch(t.exitComparison.trailing025,c,bestR,worstR,"trailing");
+  processVirtualExitBranch(x.ladder,c,bestR,worstR,"ladder");
+  if(Number(t.openedAt||0)>=TRAILING_AB_STARTED_AT) processVirtualExitBranch(x.trailing020,c,bestR,worstR,"trailing",0.20);
+  processVirtualExitBranch(x.trailing025,c,bestR,worstR,"trailing",0.25);
 }
 function comparisonLabel(branch){
   if(!branch) return "—";
@@ -1355,7 +1434,7 @@ function tradeCard(t){
   const pnlCash=(t.side==="long"?(current-t.entry):(t.entry-current))*(t.qty||0);
   const checklistDone=t.checklist?Object.values(t.checklist).filter(Boolean).length:0;
   return `<article class="paper-trade"><div class="paper-head"><div><h3>${t.symbol}/USDT · ${t.side.toUpperCase()}</h3><div class="paper-meta">${t.interval} · ${new Date(t.openedAt).toLocaleString("es-MX")}</div></div><strong class="${cls}">${status}</strong></div>
-  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Máx. avance (MFE)</span><strong>${t.mfeR>=0?"+"+fmt(t.mfeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Máx. retroceso (MAE)</span><strong>${t.maeR>=0?"-"+fmt(t.maeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Velas OHLC guardadas</span><strong>${Array.isArray(t.candleLog)?t.candleLog.length:0}${t.candleLogCompacted?` · compactadas (${Number(t.candleLogCount||0)} originales)`:t.candleLogTruncated?"+ (límite)":""}</strong></div><div class="paper-level"><span>Recorrido R</span><strong>${Array.isArray(t.rPath)?t.rPath.length:0}${t.rPathCompacted?` · compactado (${Number(t.rPathCount||t.rPathSummary?.rows||0)} originales)`:""} velas · máx. nivel ${Array.isArray(t.rLevelsHit)&&t.rLevelsHit.length?fmt(Math.max(...t.rLevelsHit),2)+"R":"0R"}${t.rPathTruncated?" + (límite)":""}</strong></div>${t.exitComparison?`<div class="paper-level"><span>Escalera</span><strong>${comparisonLabel(t.exitComparison.ladder)}</strong></div><div class="paper-level"><span>Trailing 0.25R</span><strong>${comparisonLabel(t.exitComparison.trailing025)}</strong></div>`:""}${t.qraLab?`<div class="paper-level"><span>QRA-01</span><strong>${t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"} · BTC ${t.qraLab.btcRegime}</strong></div><div class="paper-level"><span>Solo LONG</span><strong>${(t.qraLab.soloLongAccepted ?? (t.side==="long"))?"ACEPTA":"RECHAZA"}</strong></div><div class="paper-level"><span>QRA-03 virtual</span><strong>${fmt(Number(t.qraLab.qra03Virtual?.multiplier??1)*100,0)}% riesgo · ${Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1} misma dirección</strong></div><div class="paper-level"><span>Benchmark BTC</span><strong>${t.qraLab.marketBenchmark?.status==="complete"?`Exceso ${Number(t.qraLab.marketBenchmark.excessR)>=0?"+":""}${fmt(t.qraLab.marketBenchmark.excessR,2)}R`:"En seguimiento"}</strong></div>`:""}<div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
+  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Máx. avance (MFE)</span><strong>${t.mfeR>=0?"+"+fmt(t.mfeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Máx. retroceso (MAE)</span><strong>${t.maeR>=0?"-"+fmt(t.maeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Velas OHLC guardadas</span><strong>${Array.isArray(t.candleLog)?t.candleLog.length:0}${t.candleLogCompacted?` · compactadas (${Number(t.candleLogCount||0)} originales)`:t.candleLogWindowed?` · ventana reciente (${Number(t.candleLogCount||0)} totales)`:""}</strong></div><div class="paper-level"><span>Recorrido R</span><strong>${Array.isArray(t.rPath)?t.rPath.length:0}${t.rPathCompacted?` · compactado (${Number(t.rPathCount||t.rPathSummary?.rows||0)} originales)`:t.rPathWindowed?` · ventana reciente (${Number(t.rPathCount||0)} totales)`:""} velas · máx. nivel ${Array.isArray(t.rLevelsHit)&&t.rLevelsHit.length?fmt(Math.max(...t.rLevelsHit),2)+"R":"0R"}${t.rPathTruncated?" + (límite)":""}</strong></div>${t.exitComparison?`<div class="paper-level"><span>Escalera</span><strong>${comparisonLabel(t.exitComparison.ladder)}</strong></div><div class="paper-level"><span>Trailing 0.20R</span><strong>${comparisonLabel(t.exitComparison.trailing020)}</strong></div><div class="paper-level"><span>Trailing 0.25R</span><strong>${comparisonLabel(t.exitComparison.trailing025)}</strong></div>`:""}${t.qraLab?`<div class="paper-level"><span>QRA-01</span><strong>${t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"} · BTC ${t.qraLab.btcRegime}</strong></div><div class="paper-level"><span>Solo LONG</span><strong>${(t.qraLab.soloLongAccepted ?? (t.side==="long"))?"ACEPTA":"RECHAZA"}</strong></div><div class="paper-level"><span>QRA-03 virtual</span><strong>${fmt(Number(t.qraLab.qra03Virtual?.multiplier??1)*100,0)}% riesgo · ${Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1} misma dirección</strong></div><div class="paper-level"><span>Benchmark BTC</span><strong>${t.qraLab.marketBenchmark?.status==="complete"?`Exceso ${Number(t.qraLab.marketBenchmark.excessR)>=0?"+":""}${fmt(t.qraLab.marketBenchmark.excessR,2)}R`:"En seguimiento"}</strong></div>`:""}<div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
   <div class="paper-snapshot"><span class="tag">Control ${checklistDone}/4</span><span class="tag">RSI ${fmt(t.snapshot.rsi,1)}</span><span class="tag">ADX ${fmt(t.snapshot.adx,1)}</span><span class="tag">ATR ${fmt(t.snapshot.atrPct,2)}%</span><span class="tag">Vol ${fmt(t.snapshot.volumeRatio,2)}x</span><span class="tag">${t.snapshot.trend}</span></div>
   ${t.notes?`<p class="paper-note">${t.notes.replace(/</g,"&lt;")}</p>`:""}<div class="paper-actions">${t.status==="open"?`<button class="ghost" data-close-paper="${t.id}">Cerrar manual</button>`:"<span></span>"}<button class="danger" data-delete-paper="${t.id}">Eliminar</button></div></article>`;
 }
@@ -1455,8 +1534,10 @@ function renderPaperTrades(){
   const actualDone=compared.filter(t=>t.status!=="open"&&t.exit!=null);
   const actualR=actualDone.reduce((sum,t)=>sum+signedRFromPrice(t,t.exit),0);
   const ladderDone=compared.filter(t=>t.exitComparison.ladder?.status==="closed");
+  const trail020Done=compared.filter(t=>Number(t.openedAt||0)>=TRAILING_AB_STARTED_AT&&t.exitComparison.trailing020?.status==="closed");
   const trailDone=compared.filter(t=>t.exitComparison.trailing025?.status==="closed");
   const ladderR=ladderDone.reduce((s,t)=>s+Number(t.exitComparison.ladder.resultR||0),0);
+  const trail020R=trail020Done.reduce((s,t)=>s+Number(t.exitComparison.trailing020.resultR||0),0);
   const trailR=trailDone.reduce((s,t)=>s+Number(t.exitComparison.trailing025.resultR||0),0);
 
   $("#paperStats").innerHTML=[
@@ -1472,6 +1553,7 @@ function renderPaperTrades(){
     ["Movimiento promedio",(avg>=0?"+":"")+fmt(avg,2)+"%"],["R/B promedio","1 : "+fmt(avgRR,2)],
     ["Actual · cerradas",actualDone.length],["Actual · acumulado",(actualR>=0?"+":"")+fmt(actualR,2)+"R"],
     ["Escalera · cerradas",ladderDone.length],["Escalera · acumulado",(ladderR>=0?"+":"")+fmt(ladderR,2)+"R"],
+    ["Trailing 0.20R · cerradas",trail020Done.length],["Trailing 0.20R · acumulado",(trail020R>=0?"+":"")+fmt(trail020R,2)+"R"],
     ["Trailing 0.25R · cerradas",trailDone.length],["Trailing 0.25R · acumulado",(trailR>=0?"+":"")+fmt(trailR,2)+"R"]
   ].map(([k,v])=>`<div class="result-card"><span>${k}</span><strong>${v}</strong></div>`).join("");
   if(openRiskPct>10){
@@ -1521,6 +1603,7 @@ function exportPaperCSV(){
     rsi:t.snapshot?.rsi??"",adx:t.snapshot?.adx??"",volumen:t.snapshot?.volumeRatio??"",
     actual_r:t.status!=="open"&&t.exit!=null?signedRFromPrice(t,t.exit):"",
     escalera_estado:t.exitComparison?.ladder?.status||"",escalera_r:t.exitComparison?.ladder?.resultR??"",
+    trailing020_estado:t.exitComparison?.trailing020?.status||"",trailing020_r:t.exitComparison?.trailing020?.resultR??"",
     trailing025_estado:t.exitComparison?.trailing025?.status||"",trailing025_r:t.exitComparison?.trailing025?.resultR??"",
     qra_version:t.qraLab?.version||"",btc_regimen:t.qraLab?.btcRegime||"",qra01:t.qraLab?(t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"):"",qra01_motivo:t.qraLab?.qra01Reason||"",solo_long:t.qraLab?((t.qraLab.soloLongAccepted ?? (t.side==="long"))?"ACEPTA":"RECHAZA"):"",solo_long_motivo:t.qraLab?.soloLongReason||(t.qraLab?(t.side==="long"?"Aceptada: LONG":"Rechazada: estrategia Solo LONG"):""),qra03_misma_direccion:t.qraLab?(Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1):"",qra03_multiplicador:t.qraLab?.qra03Virtual?.multiplier??"",qra03_riesgo_virtual:t.qraLab?.qra03Virtual?.virtualRiskCash??"",btc_benchmark_r:t.qraLab?.marketBenchmark?.benchmarkR??"",btc_exceso_r:t.qraLab?.marketBenchmark?.excessR??"",hipotesis_version:t.qraLab?.hypothesisFreezeVersion||t.researchMeta?.hypothesisFreezeVersion||"",
     notas:(t.notes||"").replace(/\n/g," ")

@@ -127,3 +127,14 @@ El export identifica la metodología con:
 - pointInTimeAudit.intrabarTrailingConservative = true
 
 No cambia Score, stop 3%, objetivo 9%, riesgo 1%, QRA ni el motor operativo.
+
+
+## v6.10.7 · almacenamiento robusto + A/B 0.20R vs 0.25R
+
+- Mantiene sólo una ventana reciente de 24 velas OHLC y 24 filas R por operación abierta en localStorage.
+- Conserva contadores, MFE/MAE, niveles R y resumen acumulado; no cambia entradas, stops ni cierres del control.
+- Las operaciones cerradas continúan consolidándose científicamente.
+- Añade el candidato prospectivo Trailing 0.20R junto a 0.25R, con un corte fijo guardado en `quant_trailing_ab_started_at`.
+- Ambos trailing prospectivos usan la misma convención intravela conservadora que el backtest v6.10.6.
+- Operaciones abiertas antes del corte 0.20/0.25 no se convierten retrospectivamente en evidencia 0.20R.
+- QRA-01, QRA-03, caps, Score, stop 3%, target 9% y riesgo 1% permanecen sin cambios.

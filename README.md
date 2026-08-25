@@ -1,4 +1,16 @@
-# Centro Quant v6.11.4 · Hotfix seguimiento QRA + QRA-04 Market Quality/Breadth
+# Centro Quant v6.11.5 · QRA-05 Fase de Mercado (research-only)
+
+## v6.11.5 · QRA-05 Fase de Mercado
+
+- Añade **QRA-05** como hipótesis prospectiva nueva, con corte propio guardado en `quant_qra05_started_at`.
+- QRA-05 **no bloquea, no acepta, no redimensiona y no modifica** operaciones del control Centro Quant. Solo clasifica y registra.
+- La fase se calcula causalmente con la información disponible al nacer la señal: retorno direccional 5/20 velas, ATR, distancia a EMA20 normalizada por ATR, pendiente EMA20, RSI, ADX, volumen, distancia al extremo reciente y edad aproximada del impulso.
+- Estados observacionales: `IMPULSO_TEMPRANO`, `IMPULSO_MADURO`, `EXTENSION`, `LATERAL`, `RETROCESO`, `REANUDACION`, `REBOTE_CONTRA_TENDENCIA` y `TRANSICION`.
+- El laboratorio muestra fase por operación y, cuando haya cerradas posteriores al corte QRA-05, acumula R y expectancy por fase.
+- CSV y respaldo JSON conservan los campos QRA-05; la compactación de almacenamiento también preserva la evidencia.
+- Mantiene intactos QRA-01, QRA-03, QRA-04, comparadores de salida y ejecución causal al siguiente minuto.
+
+---
 
 Instrumentación prospectiva únicamente. **No cambia el motor operativo**, Score, pesos, LONG/SHORT, stop 3%, target 9%, riesgo 1%, QRA-01/QRA-03 ni salidas.
 

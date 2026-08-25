@@ -1,5 +1,5 @@
 
-// v6.11.4 · hotfix QRA pendiente/null + QRA-04 + ejecución causal intrabar 1m + radar robusto
+// v6.11.5 · QRA-05 Fase de Mercado research-only + v6.11.4 hotfix/QRA-04
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -25,7 +25,7 @@ const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS",
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const QRA_LAB_VERSION = "QRA-OOS-1";
-const APP_VERSION = "6.11.4";
+const APP_VERSION = "6.11.5";
 const RESEARCH_GENERATION = "ARONSON-QRA-2026-08-22-1";
 const HYPOTHESIS_FREEZE_VERSION = "ARONSON-HYPOTHESES-2026-08-22-1";
 const QRA03_VIRTUAL_VERSION = "QRA03-VIRTUAL-1";
@@ -35,12 +35,16 @@ const MARKET_BENCHMARK_VERSION = "BTC-PRIOR-CLOSE-1";
 const QRA04_VERSION = "QRA04-BREADTH-2026-08-24-1";
 const QRA04_STORAGE_KEY = "quant_qra04_breadth";
 const QRA04_MAX_SNAPSHOTS = 1500;
+const QRA05_VERSION = "QRA05-PHASE-2026-08-25-1";
+const QRA05_STARTED_AT = Number(localStorage.getItem("quant_qra05_started_at")||0) || Date.now();
+localStorage.setItem("quant_qra05_started_at",String(QRA05_STARTED_AT));
 const HYPOTHESIS_REGISTRY = Object.freeze({
   qra01:"Bloquear SHORT cuando BTC esté ALCISTA según prev-close-3bar-breakout.",
   qra03:"Reducir riesgo marginal cuando aumenta la exposición de la misma dirección; visor virtual, nunca modifica el control.",
   exits:"Control 3R frente a Escalera y Trailing 0.20R/0.25R como comparadores virtuales prospectivos.",
   score:"Evaluar prospectivamente calibración y aporte incremental de los componentes del score.",
-  benchmark:"Medir rendimiento de Quant frente a BTC direccional durante la misma ventana, sin usarlo para ejecutar."
+  benchmark:"Medir rendimiento de Quant frente a BTC direccional durante la misma ventana, sin usarlo para ejecutar.",
+  qra05:"Clasificar prospectivamente la fase del movimiento al nacer la señal (temprano, maduro, extensión, lateral, retroceso, reanudación o transición), sin bloquear ni redimensionar operaciones."
 });
 // Cortes preregistrados y congelados. No dependen de cuándo se actualice/reinstale la PWA.
 // 19/8/2026 11:32:53 a.m. MX: laboratorio QRA legado (referencia histórica, NO OOS estricta).
@@ -354,6 +358,53 @@ function renderHome(){
   $("#homePaperBtn").dataset.symbol=symbol;
   state.pendingPaperSignal={symbol,side,interval:tf,score,scoreType:"timeframe",snapshot:buildResearchSnapshot(d,side),createdAt:Date.now()};
 }
+function qra05MarketPhase(a,candles,side){
+  const sign=side==="short"?-1:1;
+  const closed=Array.isArray(candles)?candles.slice(0,-1):[];
+  const n=closed.length, i=n-1;
+  const signalPrice=Number(a?.signalPrice||closed.at(-1)?.c||0);
+  const atrPct=Math.max(0,Number(a?.atrPct||0));
+  const atrAbs=signalPrice*atrPct/100;
+  const ema20=Number(a?.signalEma20||a?.e20?.[Math.max(0,(a?.e20?.length||1)-2)]||0);
+  const emaArr=Array.isArray(a?.e20)?a.e20:[];
+  const emaNow=Number(emaArr[Math.max(0,emaArr.length-2)]||ema20||0);
+  const emaPast=Number(emaArr[Math.max(0,emaArr.length-7)]||emaNow||0);
+  const ema20Slope5Pct=emaPast>0?sign*(emaNow/emaPast-1)*100:null;
+  const ret5=Number.isFinite(Number(a?.ret5))?sign*Number(a.ret5):null;
+  const ret20=Number.isFinite(Number(a?.ret20))?sign*Number(a.ret20):null;
+  const distanceEma20Atr=atrAbs>0?sign*(signalPrice-ema20)/atrAbs:null;
+  const recent=closed.slice(-20);
+  const extreme=side==="long"?Math.max(...recent.map(x=>Number(x.h))):Math.min(...recent.map(x=>Number(x.l)));
+  const pullbackFromExtremeAtr=atrAbs>0?(side==="long"?(extreme-signalPrice):(signalPrice-extreme))/atrAbs:null;
+  let directionalCloses=0;
+  for(let k=n-1;k>0&&directionalCloses<12;k--){
+    const d=sign*(Number(closed[k].c)-Number(closed[k-1].c));
+    if(d>0) directionalCloses++; else break;
+  }
+  const rsi=Number(a?.rsi), adx=Number(a?.adx), volumeRatio=Number(a?.volumeRatio||1);
+  const aligned=side==="long"?a?.trend==="Alcista":a?.trend==="Bajista";
+  const directionRsi=side==="long"?rsi:(100-rsi);
+  const normalizedImpulse=atrPct>0&&ret5!=null?ret5/atrPct:null;
+  let phase="TRANSICION", code="TRANSITION", reason="Estructura mixta o sin condición dominante.";
+  const extended=(distanceEma20Atr!=null&&distanceEma20Atr>=2.5)||(normalizedImpulse!=null&&normalizedImpulse>=2.0)||directionRsi>=72;
+  const lateral=(ret5!=null&&Math.abs(ret5)<=Math.max(.15,atrPct*.45))&&(adx<25 || (distanceEma20Atr!=null&&Math.abs(distanceEma20Atr)<.65));
+  const pullback=aligned&&ret5!=null&&ret5<0&&pullbackFromExtremeAtr!=null&&pullbackFromExtremeAtr>=.45;
+  const resumed=aligned&&ret5!=null&&ret5>0&&pullbackFromExtremeAtr!=null&&pullbackFromExtremeAtr>=.35&&pullbackFromExtremeAtr<=2.5&&distanceEma20Atr!=null&&distanceEma20Atr>=-.25&&distanceEma20Atr<=1.8;
+  if(extended&&ret5!=null&&ret5>0){phase="EXTENSION";code="EXTENSION";reason="Movimiento favorable ya extendido respecto a ATR/EMA20 o RSI direccional.";}
+  else if(pullback){phase="RETROCESO";code="PULLBACK";reason="Retroceso contra la dirección dentro de una estructura todavía alineada.";}
+  else if(resumed){phase="REANUDACION";code="RESUMPTION";reason="Estructura alineada con avance renovado después de separarse del extremo reciente.";}
+  else if(lateral){phase="LATERAL";code="LATERAL";reason="Poco desplazamiento neto frente al ATR y baja fuerza/distancia de tendencia.";}
+  else if(aligned&&ret5!=null&&ret5>0){
+    const mature=(distanceEma20Atr!=null&&distanceEma20Atr>=1.25)||(ret20!=null&&atrPct>0&&ret20/atrPct>=3)||directionalCloses>=4;
+    phase=mature?"IMPULSO_MADURO":"IMPULSO_TEMPRANO";code=mature?"MATURE_IMPULSE":"EARLY_IMPULSE";
+    reason=mature?"Impulso alineado con recorrido/edad ya relevantes.":"Impulso alineado todavía sin extensión relevante.";
+  }
+  else if(!aligned&&ret5!=null&&ret5>0){phase="REBOTE_CONTRA_TENDENCIA";code="COUNTERTREND_BOUNCE";reason="Avance favorable de corto plazo sin estructura principal alineada.";}
+  return {version:QRA05_VERSION,mode:"research-only",startedAt:QRA05_STARTED_AT,evaluatedAt:Date.now(),phase,code,reason,side,
+    metrics:{ret5Dir:ret5,ret20Dir:ret20,atrPct,distanceEma20Atr,ema20Slope5Pct,pullbackFromExtremeAtr,directionalCloses,rsi,adx,volumeRatio,trend:a?.trend||null,normalizedImpulse},
+    virtualDecision:"OBSERVAR",accepted:null,causal:true};
+}
+
 function buildResearchSnapshot(a,side){
   const factors=side==="short"?a?.shortFactors:a?.longFactors;
   const factorScores={};
@@ -466,12 +517,12 @@ async function getBtcBenchmarkReference(atTime,interval){
     const last=raw.at(-1); return {price:+last[4],asOf:+last[6]};
   }catch(e){ console.warn("BTC benchmark",e); return {price:null,asOf:null}; }
 }
-async function buildQraLabSnapshot(side,openedAt,interval,riskCash,capital){
+async function buildQraLabSnapshot(side,openedAt,interval,riskCash,capital,qra05Phase=null){
   const [regime,btcRef]=await Promise.all([getQraBtcRegime(openedAt),getBtcBenchmarkReference(openedAt,interval)]);
   const blocked=side==="short"&&regime.state==="ALCISTA",exposure=qraExposureSnapshot(side,openedAt);
   const qra03Virtual=qra03VirtualDecision(exposure,riskCash,capital);
   const marketBenchmark={version:MARKET_BENCHMARK_VERSION,asset:"BTC",side,interval:interval||null,entryPrice:btcRef.price,entryAsOf:btcRef.asOf,exitPrice:null,exitAsOf:null,directionalReturnPct:null,benchmarkR:null,excessR:null,status:btcRef.price?"tracking":"missing-entry"};
-  return {version:QRA_LAB_VERSION,evaluatedAt:Date.now(),sampleStartedAt:STRICT_OOS_STARTED_AT,hypothesisFreezeVersion:HYPOTHESIS_FREEZE_VERSION,btcRegime:regime.state,btcClose:regime.close,btcAsOf:regime.asOf,rule:regime.rule,qra01Accepted:!blocked,qra01Reason:blocked?"SHORT bloqueado: BTC ALCISTA":"Aceptada por QRA-01",soloLongAccepted:side==="long",soloLongReason:side==="long"?"Aceptada: LONG":"Rechazada: estrategia Solo LONG",qra03Observation:exposure,qra03Virtual,qra03CapsStudy:{version:QRA03_CAPS_VERSION,startedAt:QRA03_CAPS_STARTED_AT,caps:[...QRA03_CAPS],priority:"score-desc,symbol-asc",sameDirectionOnly:true,mode:"research-only"},marketBenchmark};
+  return {version:QRA_LAB_VERSION,evaluatedAt:Date.now(),sampleStartedAt:STRICT_OOS_STARTED_AT,hypothesisFreezeVersion:HYPOTHESIS_FREEZE_VERSION,btcRegime:regime.state,btcClose:regime.close,btcAsOf:regime.asOf,rule:regime.rule,qra01Accepted:!blocked,qra01Reason:blocked?"SHORT bloqueado: BTC ALCISTA":"Aceptada por QRA-01",soloLongAccepted:side==="long",soloLongReason:side==="long"?"Aceptada: LONG":"Rechazada: estrategia Solo LONG",qra03Observation:exposure,qra03Virtual,qra03CapsStudy:{version:QRA03_CAPS_VERSION,startedAt:QRA03_CAPS_STARTED_AT,caps:[...QRA03_CAPS],priority:"score-desc,symbol-asc",sameDirectionOnly:true,mode:"research-only"},qra05:qra05Phase,marketBenchmark};
 }
 async function finalizeMarketBenchmark(t){
   const b=t?.qraLab?.marketBenchmark;if(!b||b.status==="complete"||!t.closedAt)return;
@@ -534,6 +585,12 @@ function renderQraLabStats(){
   const benchmarked=x.closed.filter(t=>t.qraLab?.marketBenchmark?.status==="complete"&&Number.isFinite(Number(t.qraLab.marketBenchmark.benchmarkR)));
   const btcBenchR=benchmarked.reduce((s,t)=>s+Number(t.qraLab.marketBenchmark.benchmarkR||0),0),excessR=benchmarked.reduce((s,t)=>s+Number(t.qraLab.marketBenchmark.excessR||0),0);
   const maxPeers=Math.max(0,...strict.map(t=>Number(t.qraLab?.qra03Observation?.sameDirectionOpen||0)+1));
+  const qra05Trades=strict.filter(t=>Number(t.openedAt||0)>=QRA05_STARTED_AT&&t.qraLab?.qra05?.phase);
+  const qra05Closed=qra05Trades.filter(t=>t.status!=="open"&&t.exit!=null);
+  const qra05Phases=[...new Set(qra05Closed.map(t=>t.qraLab.qra05.phase))].sort().map(phase=>{
+    const rows=qra05Closed.filter(t=>t.qraLab.qra05.phase===phase), total=rows.reduce((sum,t)=>sum+Number(qraActualR(t)||0),0);
+    return [phase,rows.length,total,rows.length?total/rows.length:0];
+  });
   const cards=[
     ["OOS estricta Aronson · desde 22/8",`${x.closed.length} cerradas · ${strict.filter(t=>t.status==="open").length} abiertas`],
     ["Control CQ · OOS",`${x.controlR>=0?"+":""}${fmt(x.controlR,2)}R`],
@@ -546,6 +603,9 @@ function renderQraLabStats(){
     ["QRA-01 + Trailing · OOS",x.trail.length?`${x.trailR>=0?"+":""}${fmt(x.trailR,2)}R · ${x.trail.length} cerradas`:"Esperando"],
     ["Rechazadas QRA-01 · OOS",`${x.rejected.length} · control ${x.rejectedControlR>=0?"+":""}${fmt(x.rejectedControlR,2)}R`],
     ["QRA-03 virtual · OOS",qra03Closed.length?`${qra03R>=0?"+":""}${fmt(qra03R,2)}R · ${qra03Closed.length} cerradas`:"Esperando"],
+    ["QRA-05 Fase · prospectiva",qra05Trades.length?`${qra05Closed.length} cerradas · ${qra05Trades.filter(t=>t.status==="open").length} abiertas · SOLO OBSERVA`:"Esperando operaciones nuevas"],
+    ...qra05Phases.map(([phase,n,total,exp])=>[`QRA-05 · ${phase}`,`${total>=0?"+":""}${fmt(total,2)}R · ${n} cerradas · exp ${exp>=0?"+":""}${fmt(exp,3)}R`]),
+    ["QRA-05 desde",new Date(QRA05_STARTED_AT).toLocaleString("es-MX")],
     ["QRA histórico 19→22 ago",`${h.closed.length} cerradas · ${historical.filter(t=>t.status==="open").length} abiertas · NO OOS`],
     ["Control CQ · histórico",`${h.controlR>=0?"+":""}${fmt(h.controlR,2)}R`],
     ...QRA03_CAPS.map(cap=>{const z=qra03CapStudy(cap);return [`QRA-03 cap ${cap}`,z.closed.length?`${z.total>=0?"+":""}${fmt(z.total,2)}R · ${z.closed.length} cerradas · ${z.open.length} abiertas`:`Esperando nuevas operaciones`]}),
@@ -570,7 +630,7 @@ function renderQraLabTrades(){
       const qStatus=t?.pendingActivation?"Pendiente de activación":"QRA pendiente";
       return `<div class="result-card qra-trade-card"><span>${new Date(t.openedAt||t.activationAt||Date.now()).toLocaleString("es-MX")} · ${t.interval||""}</span><strong>${t.symbol} · ${(t.side||"").toUpperCase()} · ${status}</strong><div class="qra-trade-lines"><div>CQ Control: <b>${status}</b></div><div>Laboratorio QRA: <b>${qStatus}</b></div><div>Solo LONG / QRA-01 / QRA-03: <b>Se calculan al activar la entrada causal</b></div></div></div>`;
     }
-    return `<div class="result-card qra-trade-card"><span>${new Date(t.openedAt).toLocaleString("es-MX")} · ${t.interval||""}</span><strong>${t.symbol} · ${(t.side||"").toUpperCase()} · ${status}</strong><div class="qra-trade-lines"><div>CQ Control: <b>${status}</b></div><div>Solo LONG: <b>${(q.soloLongAccepted ?? t.side==="long")?"ACEPTA":"RECHAZA"}</b></div><div>QRA-01: <b>${q.qra01Accepted?"ACEPTA":"BLOQUEA"}</b> · BTC ${q.btcRegime||"PENDIENTE"}</div><div>QRA + Escalera: <b>${q.qra01Accepted?val(ladder):"NO TOMADA"}</b></div><div>Trailing 0.20R A/B: <b>${Number(t.openedAt||0)>=TRAILING_AB_STARTED_AT?val(trail020):"PRE-CORTE"}</b></div><div>Trailing 0.25R A/B: <b>${Number(t.openedAt||0)>=TRAILING_AB_STARTED_AT?val(trail):"PRE-CORTE"}</b></div><div>QRA + Trailing 0.25R: <b>${q.qra01Accepted?val(trail):"NO TOMADA"}</b></div><div>QRA-03 virtual: <b>${fmt(Number(q.qra03Virtual?.multiplier??1)*100,0)}%</b> del riesgo · ${Number(q.qra03Observation?.sameDirectionOpen||0)+1} misma dirección</div><div>Benchmark BTC: <b>${q.marketBenchmark?.status==="complete"?`${Number(q.marketBenchmark.excessR)>=0?"+":""}${fmt(q.marketBenchmark.excessR,2)}R exceso`:"En seguimiento"}</b></div></div></div>`;
+    return `<div class="result-card qra-trade-card"><span>${new Date(t.openedAt).toLocaleString("es-MX")} · ${t.interval||""}</span><strong>${t.symbol} · ${(t.side||"").toUpperCase()} · ${status}</strong><div class="qra-trade-lines"><div>CQ Control: <b>${status}</b></div><div>Solo LONG: <b>${(q.soloLongAccepted ?? t.side==="long")?"ACEPTA":"RECHAZA"}</b></div><div>QRA-01: <b>${q.qra01Accepted?"ACEPTA":"BLOQUEA"}</b> · BTC ${q.btcRegime||"PENDIENTE"}</div><div>QRA + Escalera: <b>${q.qra01Accepted?val(ladder):"NO TOMADA"}</b></div><div>Trailing 0.20R A/B: <b>${Number(t.openedAt||0)>=TRAILING_AB_STARTED_AT?val(trail020):"PRE-CORTE"}</b></div><div>Trailing 0.25R A/B: <b>${Number(t.openedAt||0)>=TRAILING_AB_STARTED_AT?val(trail):"PRE-CORTE"}</b></div><div>QRA + Trailing 0.25R: <b>${q.qra01Accepted?val(trail):"NO TOMADA"}</b></div><div>QRA-03 virtual: <b>${fmt(Number(q.qra03Virtual?.multiplier??1)*100,0)}%</b> del riesgo · ${Number(q.qra03Observation?.sameDirectionOpen||0)+1} misma dirección</div><div>QRA-05 fase: <b>${q.qra05?.phase||"PRE-QRA05"}</b>${q.qra05?.metrics?.distanceEma20Atr!=null?` · dist EMA20 ${fmt(q.qra05.metrics.distanceEma20Atr,2)} ATR`:""} · solo observa</div><div>Benchmark BTC: <b>${q.marketBenchmark?.status==="complete"?`${Number(q.marketBenchmark.excessR)>=0?"+":""}${fmt(q.marketBenchmark.excessR,2)}R exceso`:"En seguimiento"}</b></div></div></div>`;
   }).join("");
 }
 
@@ -653,7 +713,8 @@ async function scanAutoPaper(manual=false){
         const refLv=paperLevels(referenceEntry,pick.side,"percent",a.stopPct,"percent",a.targetPct),refRiskDist=Math.abs(referenceEntry-refLv.stop),refRewardDist=Math.abs(refLv.target-referenceEntry),rr=refRiskDist?refRewardDist/refRiskDist:0;
         if(rr<3)return row;
         const riskCash=a.capital*a.riskPct/100,qty=refRiskDist?riskCash/refRiskDist:0;
-        state.paperTrades.unshift({id:createdAt+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry:referenceEntry,stop:refLv.stop,target:refLv.target,openedAt,status:"open",current:referenceEntry,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*refRewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:buildResearchSnapshot(analysis,pick.side),researchMeta:buildResearchMeta(),notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez · ejecución causal al siguiente minuto`,auto:true,entryTimingFixed:true,createdAt,signalCandleAt:+signalCandle.t,signalCandleCloseAt:+(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1),executionModel:"NEXT_1M_OPEN_CAUSAL_V1",monitorInterval:"1m",pendingActivation:true,activationAt:openedAt,plannedStopPct:a.stopPct,plannedTargetPct:a.targetPct,monitorFrom:openedAt,closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qraLab:null});
+        const qra05Signal=qra05MarketPhase(analysis,candles,pick.side);
+        state.paperTrades.unshift({id:createdAt+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry:referenceEntry,stop:refLv.stop,target:refLv.target,openedAt,status:"open",current:referenceEntry,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*refRewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:buildResearchSnapshot(analysis,pick.side),researchMeta:buildResearchMeta(),notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez · ejecución causal al siguiente minuto`,auto:true,entryTimingFixed:true,createdAt,signalCandleAt:+signalCandle.t,signalCandleCloseAt:+(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1),executionModel:"NEXT_1M_OPEN_CAUSAL_V1",monitorInterval:"1m",pendingActivation:true,activationAt:openedAt,plannedStopPct:a.stopPct,plannedTargetPct:a.targetPct,monitorFrom:openedAt,closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qra05Signal, qraLab:null});
         a.lastSignals[key]=signalId;opened++; return row;
       }catch(e){
         failed++;
@@ -668,7 +729,7 @@ async function scanAutoPaper(manual=false){
     const qra04Snapshot=saveQra04BreadthSnapshot(state.scannerResults,a.interval,universe.length);
     renderScannerResults();
     saveAutoPaper();savePaperState();renderPaperTrades();
-    finalStatus=`${a.enabled?"Activo":"Barrido manual"} · ${completed}/${universe.length} revisadas${failed?` · ${failed} sin respuesta`:""} · ${a.interval} · score ≥ ${a.threshold}${opened?` · ${opened} nueva${opened===1?"":"s"}`:" · sin señales nuevas"}${qra04Snapshot?" · QRA-04 ✓":""}`;
+    finalStatus=`${a.enabled?"Activo":"Barrido manual"} · ${completed}/${universe.length} revisadas${failed?` · ${failed} sin respuesta`:""} · ${a.interval} · score ≥ ${a.threshold}${opened?` · ${opened} nueva${opened===1?"":"s"}`:" · sin señales nuevas"}${qra04Snapshot?" · QRA-04 ✓":""} · QRA-05 fase ✓`;
   }catch(e){
     console.warn("scanAutoPaper",e);
     finalStatus="Barrido terminado con error · se reintentará en el siguiente ciclo";
@@ -1070,7 +1131,7 @@ function compactClosedTradeRecord(t){
   if(!t || t.status==="open" || t.storageCompactVersion==="6.10.7") return t;
   const rsum=(Array.isArray(t.rPath)&&t.rPath.length?summarizeRPath(t):t.rPathSummary)||null;
   const s=t.snapshot||{},rm=t.researchMeta||{},ec=t.exitComparison||{},q=t.qraLab||{};
-  const obs=q.qra03Observation||{},q3=q.qra03Virtual||{},bm=q.marketBenchmark||{};
+  const obs=q.qra03Observation||{},q3=q.qra03Virtual||{},bm=q.marketBenchmark||{},q5=q.qra05||null;
   const out={
     id:t.id,symbol:t.symbol,side:t.side,interval:t.interval,entry:t.entry,stop:t.stop,target:t.target,
     openedAt:t.openedAt,status:t.status,score:t.score,capital:t.capital,riskPct:t.riskPct,riskCash:t.riskCash,
@@ -1091,6 +1152,7 @@ function compactClosedTradeRecord(t){
       qra03Observation:{sameDirectionOpen:Number(obs.sameDirectionOpen||0),sameDirectionRiskCash:Number(obs.sameDirectionRiskCash||0)},
       qra03Virtual:{version:q3.version||QRA03_VIRTUAL_VERSION,multiplier:q3.multiplier??null,virtualRiskCash:q3.virtualRiskCash??null,accepted:q3.accepted??null},
       qra03CapsStudy:q.qra03CapsStudy?{version:q.qra03CapsStudy.version||QRA03_CAPS_VERSION,startedAt:Number(q.qra03CapsStudy.startedAt||QRA03_CAPS_STARTED_AT),caps:Array.isArray(q.qra03CapsStudy.caps)?q.qra03CapsStudy.caps:[...QRA03_CAPS],priority:q.qra03CapsStudy.priority||"score-desc,symbol-asc",sameDirectionOnly:true,mode:"research-only"}:null,
+      qra05:q5?{version:q5.version||QRA05_VERSION,mode:"research-only",startedAt:Number(q5.startedAt||QRA05_STARTED_AT),evaluatedAt:q5.evaluatedAt||null,phase:q5.phase||null,code:q5.code||null,reason:q5.reason||null,side:q5.side||t.side,metrics:q5.metrics||null,virtualDecision:q5.virtualDecision||"OBSERVAR",accepted:null,causal:q5.causal!==false}:null,
       marketBenchmark:{version:bm.version||MARKET_BENCHMARK_VERSION,benchmarkR:bm.benchmarkR??null,excessR:bm.excessR??null,status:bm.status||null}
     }:null,
     rPathSummary:rsum?{rows:rsum.rows??null,maxBestR:rsum.maxBestR??null,minWorstR:rsum.minWorstR??null,maxLevelR:rsum.maxLevelR??0}:null,
@@ -1189,7 +1251,8 @@ async function createPaperTrade(){
   const checklist={trend:$("#checkTrend").checked,signal:$("#checkSignal").checked,risk:$("#checkRisk").checked,noImpulse:$("#checkNoImpulse").checked};
   const completed=Object.values(checklist).filter(Boolean).length;
   if(completed<3&&!confirm(`Solo completaste ${completed} de 4 controles. ¿Guardar de todos modos?`)) return;
-  const qraLab=await buildQraLabSnapshot(side,now,int,riskCash,capital);
+  const qra05Signal=qra05MarketPhase(a,candles,side);
+  const qraLab=await buildQraLabSnapshot(side,now,int,riskCash,capital,qra05Signal);
   state.paperTrades.unshift({id:now,symbol:sym,side,interval:int,entry,stop:lv.stop,target:lv.target,openedAt:now,status:"open",current:entry,score,capital,riskPct,riskCash,qty,potentialProfit,rr,checklist,
     scoreType:usePending&&pending.combo?"1D+4H":"timeframe",scoreDaily:usePending&&pending.combo?pending.combo.dailyScore:null,score4h:usePending&&pending.combo?pending.combo.entryScore:null,
     snapshot:usePending?pending.snapshot:buildResearchSnapshot(a,side),researchMeta:buildResearchMeta(),
@@ -1216,7 +1279,8 @@ async function activateCausalTrade(t,c){
   t.qty=riskDist?Number(t.riskCash||0)/riskDist:0;t.potentialProfit=t.qty*rewardDist;t.rr=riskDist?rewardDist/riskDist:0;
   t.openedAt=Number(t.activationAt||c.t);t.monitorFrom=t.openedAt;
   // Mientras se construye QRA, esta operación sigue marcada como pendiente para que no se cuente a sí misma.
-  t.qraLab=await buildQraLabSnapshot(t.side,t.openedAt,t.interval,t.riskCash,t.capital);
+  t.qraLab=await buildQraLabSnapshot(t.side,t.openedAt,t.interval,t.riskCash,t.capital,t.qra05Signal||null);
+  if(t.qra05Signal) delete t.qra05Signal;
   t.pendingActivation=false;t.activatedAt=Date.now();
 }
 function tradeResultPct(t,exit){
@@ -1542,7 +1606,7 @@ function tradeCard(t){
   const pnlCash=(t.side==="long"?(current-t.entry):(t.entry-current))*(t.qty||0);
   const checklistDone=t.checklist?Object.values(t.checklist).filter(Boolean).length:0;
   return `<article class="paper-trade"><div class="paper-head"><div><h3>${t.symbol}/USDT · ${t.side.toUpperCase()}</h3><div class="paper-meta">${t.interval} · ${new Date(t.openedAt).toLocaleString("es-MX")}</div></div><strong class="${cls}">${status}</strong></div>
-  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Máx. avance (MFE)</span><strong>${t.mfeR>=0?"+"+fmt(t.mfeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Máx. retroceso (MAE)</span><strong>${t.maeR>=0?"-"+fmt(t.maeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Velas OHLC guardadas</span><strong>${Array.isArray(t.candleLog)?t.candleLog.length:0}${t.candleLogCompacted?` · compactadas (${Number(t.candleLogCount||0)} originales)`:t.candleLogWindowed?` · ventana reciente (${Number(t.candleLogCount||0)} totales)`:""}</strong></div><div class="paper-level"><span>Recorrido R</span><strong>${Array.isArray(t.rPath)?t.rPath.length:0}${t.rPathCompacted?` · compactado (${Number(t.rPathCount||t.rPathSummary?.rows||0)} originales)`:t.rPathWindowed?` · ventana reciente (${Number(t.rPathCount||0)} totales)`:""} velas · máx. nivel ${Array.isArray(t.rLevelsHit)&&t.rLevelsHit.length?fmt(Math.max(...t.rLevelsHit),2)+"R":"0R"}${t.rPathTruncated?" + (límite)":""}</strong></div>${t.exitComparison?`<div class="paper-level"><span>Escalera</span><strong>${comparisonLabel(t.exitComparison.ladder)}</strong></div><div class="paper-level"><span>Trailing 0.20R</span><strong>${comparisonLabel(t.exitComparison.trailing020)}</strong></div><div class="paper-level"><span>Trailing 0.25R</span><strong>${comparisonLabel(t.exitComparison.trailing025)}</strong></div>`:""}${t.qraLab?`<div class="paper-level"><span>QRA-01</span><strong>${t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"} · BTC ${t.qraLab.btcRegime}</strong></div><div class="paper-level"><span>Solo LONG</span><strong>${(t.qraLab.soloLongAccepted ?? (t.side==="long"))?"ACEPTA":"RECHAZA"}</strong></div><div class="paper-level"><span>QRA-03 virtual</span><strong>${fmt(Number(t.qraLab.qra03Virtual?.multiplier??1)*100,0)}% riesgo · ${Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1} misma dirección</strong></div><div class="paper-level"><span>Benchmark BTC</span><strong>${t.qraLab.marketBenchmark?.status==="complete"?`Exceso ${Number(t.qraLab.marketBenchmark.excessR)>=0?"+":""}${fmt(t.qraLab.marketBenchmark.excessR,2)}R`:"En seguimiento"}</strong></div>`:""}<div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
+  <div class="paper-levels"><div class="paper-level"><span>Entrada</span><strong>${money(t.entry)}</strong></div><div class="paper-level"><span>Stop</span><strong>${money(t.stop)}</strong></div><div class="paper-level"><span>Objetivo</span><strong>${money(t.target)}</strong></div><div class="paper-level"><span>${t.status==="open"?"Precio actual":"Salida"}</span><strong>${money(current)}</strong></div><div class="paper-level"><span>Resultado</span><strong class="${running>=0?"status-win":"status-loss"}">${running>=0?"+":""}${fmt(running,2)}%</strong></div><div class="paper-level"><span>Resultado $</span><strong class="${pnlCash>=0?"status-win":"status-loss"}">${pnlCash>=0?"+":""}${money(pnlCash)}</strong></div><div class="paper-level"><span>R/B inicial</span><strong>1 : ${fmt(t.rr||Math.abs(t.target-t.entry)/Math.abs(t.entry-t.stop),2)}</strong></div><div class="paper-level"><span>Máx. avance (MFE)</span><strong>${t.mfeR>=0?"+"+fmt(t.mfeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Máx. retroceso (MAE)</span><strong>${t.maeR>=0?"-"+fmt(t.maeR,2)+"R":"Calculando…"}</strong></div><div class="paper-level"><span>Velas OHLC guardadas</span><strong>${Array.isArray(t.candleLog)?t.candleLog.length:0}${t.candleLogCompacted?` · compactadas (${Number(t.candleLogCount||0)} originales)`:t.candleLogWindowed?` · ventana reciente (${Number(t.candleLogCount||0)} totales)`:""}</strong></div><div class="paper-level"><span>Recorrido R</span><strong>${Array.isArray(t.rPath)?t.rPath.length:0}${t.rPathCompacted?` · compactado (${Number(t.rPathCount||t.rPathSummary?.rows||0)} originales)`:t.rPathWindowed?` · ventana reciente (${Number(t.rPathCount||0)} totales)`:""} velas · máx. nivel ${Array.isArray(t.rLevelsHit)&&t.rLevelsHit.length?fmt(Math.max(...t.rLevelsHit),2)+"R":"0R"}${t.rPathTruncated?" + (límite)":""}</strong></div>${t.exitComparison?`<div class="paper-level"><span>Escalera</span><strong>${comparisonLabel(t.exitComparison.ladder)}</strong></div><div class="paper-level"><span>Trailing 0.20R</span><strong>${comparisonLabel(t.exitComparison.trailing020)}</strong></div><div class="paper-level"><span>Trailing 0.25R</span><strong>${comparisonLabel(t.exitComparison.trailing025)}</strong></div>`:""}${t.qraLab?`<div class="paper-level"><span>QRA-01</span><strong>${t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"} · BTC ${t.qraLab.btcRegime}</strong></div><div class="paper-level"><span>Solo LONG</span><strong>${(t.qraLab.soloLongAccepted ?? (t.side==="long"))?"ACEPTA":"RECHAZA"}</strong></div><div class="paper-level"><span>QRA-03 virtual</span><strong>${fmt(Number(t.qraLab.qra03Virtual?.multiplier??1)*100,0)}% riesgo · ${Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1} misma dirección</strong></div>${t.qraLab.qra05?`<div class="paper-level"><span>QRA-05 fase</span><strong>${t.qraLab.qra05.phase||"PENDIENTE"} · solo observa</strong></div>`:""}<div class="paper-level"><span>Benchmark BTC</span><strong>${t.qraLab.marketBenchmark?.status==="complete"?`Exceso ${Number(t.qraLab.marketBenchmark.excessR)>=0?"+":""}${fmt(t.qraLab.marketBenchmark.excessR,2)}R`:"En seguimiento"}</strong></div>`:""}<div class="paper-level"><span>Riesgo planeado</span><strong>${money(t.riskCash||0)} (${fmt(t.riskPct||0,1)}%)</strong></div><div class="paper-level"><span>Ganancia potencial</span><strong>${money(t.potentialProfit||0)}</strong></div><div class="paper-level"><span>Score inicial</span><strong>${t.score}/100${t.scoreType==="1D+4H"?` · combinado (1D ${t.scoreDaily} / 4H ${t.score4h})`:""}</strong></div></div>
   <div class="paper-snapshot"><span class="tag">Control ${checklistDone}/4</span><span class="tag">RSI ${fmt(t.snapshot.rsi,1)}</span><span class="tag">ADX ${fmt(t.snapshot.adx,1)}</span><span class="tag">ATR ${fmt(t.snapshot.atrPct,2)}%</span><span class="tag">Vol ${fmt(t.snapshot.volumeRatio,2)}x</span><span class="tag">${t.snapshot.trend}</span></div>
   ${t.notes?`<p class="paper-note">${t.notes.replace(/</g,"&lt;")}</p>`:""}<div class="paper-actions">${t.status==="open"?`<button class="ghost" data-close-paper="${t.id}">Cerrar manual</button>`:"<span></span>"}<button class="danger" data-delete-paper="${t.id}">Eliminar</button></div></article>`;
 }
@@ -1713,7 +1777,7 @@ function exportPaperCSV(){
     escalera_estado:t.exitComparison?.ladder?.status||"",escalera_r:t.exitComparison?.ladder?.resultR??"",
     trailing020_estado:t.exitComparison?.trailing020?.status||"",trailing020_r:t.exitComparison?.trailing020?.resultR??"",
     trailing025_estado:t.exitComparison?.trailing025?.status||"",trailing025_r:t.exitComparison?.trailing025?.resultR??"",
-    qra_version:t.qraLab?.version||"",btc_regimen:t.qraLab?.btcRegime||"",qra01:t.qraLab?(t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"):"",qra01_motivo:t.qraLab?.qra01Reason||"",solo_long:t.qraLab?((t.qraLab.soloLongAccepted ?? (t.side==="long"))?"ACEPTA":"RECHAZA"):"",solo_long_motivo:t.qraLab?.soloLongReason||(t.qraLab?(t.side==="long"?"Aceptada: LONG":"Rechazada: estrategia Solo LONG"):""),qra03_misma_direccion:t.qraLab?(Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1):"",qra03_multiplicador:t.qraLab?.qra03Virtual?.multiplier??"",qra03_riesgo_virtual:t.qraLab?.qra03Virtual?.virtualRiskCash??"",btc_benchmark_r:t.qraLab?.marketBenchmark?.benchmarkR??"",btc_exceso_r:t.qraLab?.marketBenchmark?.excessR??"",hipotesis_version:t.qraLab?.hypothesisFreezeVersion||t.researchMeta?.hypothesisFreezeVersion||"",
+    qra_version:t.qraLab?.version||"",btc_regimen:t.qraLab?.btcRegime||"",qra01:t.qraLab?(t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"):"",qra01_motivo:t.qraLab?.qra01Reason||"",solo_long:t.qraLab?((t.qraLab.soloLongAccepted ?? (t.side==="long"))?"ACEPTA":"RECHAZA"):"",solo_long_motivo:t.qraLab?.soloLongReason||(t.qraLab?(t.side==="long"?"Aceptada: LONG":"Rechazada: estrategia Solo LONG"):""),qra03_misma_direccion:t.qraLab?(Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1):"",qra03_multiplicador:t.qraLab?.qra03Virtual?.multiplier??"",qra03_riesgo_virtual:t.qraLab?.qra03Virtual?.virtualRiskCash??"",qra05_fase:t.qraLab?.qra05?.phase||"",qra05_codigo:t.qraLab?.qra05?.code||"",qra05_dist_ema20_atr:t.qraLab?.qra05?.metrics?.distanceEma20Atr??"",qra05_retorno5_dir:t.qraLab?.qra05?.metrics?.ret5Dir??"",qra05_retorno20_dir:t.qraLab?.qra05?.metrics?.ret20Dir??"",qra05_pullback_atr:t.qraLab?.qra05?.metrics?.pullbackFromExtremeAtr??"",qra05_ema20_slope5:t.qraLab?.qra05?.metrics?.ema20Slope5Pct??"",btc_benchmark_r:t.qraLab?.marketBenchmark?.benchmarkR??"",btc_exceso_r:t.qraLab?.marketBenchmark?.excessR??"",hipotesis_version:t.qraLab?.hypothesisFreezeVersion||t.researchMeta?.hypothesisFreezeVersion||"",
     notas:(t.notes||"").replace(/\n/g," ")
   }));
   if(!rows.length)return alert("No hay operaciones para exportar.");
@@ -1809,7 +1873,7 @@ $("#newOosCohortBtn").onclick=()=>{
   state.autoPaper={...state.autoPaper,lastSignals:{}};
   saveAutoPaper();
   localStorage.setItem("quant_v611_oos_cohort_started_at",String(at));
-  localStorage.setItem("quant_v611_oos_cohort_meta",JSON.stringify({version:"QRA04-OOS-v6.11",startedAt:at,mode:"prospective-clean",strategyVersion:"6.11.4"}));
+  localStorage.setItem("quant_v611_oos_cohort_meta",JSON.stringify({version:"QRA04-OOS-v6.11",startedAt:at,mode:"prospective-clean",strategyVersion:"6.11.5"}));
   alert("Nueva cohorte OOS iniciada. Operaciones: 0. Estrategia y QRA-04 conservados.");
   location.reload();
 };

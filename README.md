@@ -1,4 +1,4 @@
-# Centro Quant v6.11.3 · QRA-04 Market Quality/Breadth
+# Centro Quant v6.11.4 · Hotfix seguimiento QRA + QRA-04 Market Quality/Breadth
 
 Instrumentación prospectiva únicamente. **No cambia el motor operativo**, Score, pesos, LONG/SHORT, stop 3%, target 9%, riesgo 1%, QRA-01/QRA-03 ni salidas.
 
@@ -158,3 +158,11 @@ No cambia Score, stop 3%, objetivo 9%, riesgo 1%, QRA ni el motor operativo.
 - Stop/target, MFE/MAE, escalera, trailing y `rPath` se siguen con velas de 1 minuto desde la activación, evitando usar máximos/mínimos previos a la existencia de la operación.
 - QRA-04 sigue siendo sólo instrumentación; el score y sus pesos permanecen intactos.
 - Tras instalar, iniciar una nueva cohorte OOS y descartar la cohorte v6.11.0 contaminada.
+
+
+## v6.11.4 · Hotfix seguimiento QRA
+
+- Corrige el error `null is not an object (evaluating t.qraLab.soloLongAccepted)` en la vista de Laboratorio/Pruebas.
+- Una operación automática puede existir unos instantes con `qraLab:null` mientras espera su activación causal de 1 minuto; la UI ahora la muestra como QRA pendiente en vez de intentar leer campos inexistentes.
+- No modifica Score, reglas de entrada, stop/objetivo, QRA-01, QRA-03, trailing, escalera ni la cohorte OOS existente.
+- Actualiza la caché del service worker a v6.11.4 para forzar la carga del hotfix.

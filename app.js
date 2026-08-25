@@ -1,5 +1,5 @@
 
-// v6.11.3 · QRA-04 + ejecución causal intrabar 1m + radar robusto
+// v6.11.4 · hotfix QRA pendiente/null + QRA-04 + ejecución causal intrabar 1m + radar robusto
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -25,7 +25,7 @@ const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS",
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const QRA_LAB_VERSION = "QRA-OOS-1";
-const APP_VERSION = "6.11.3";
+const APP_VERSION = "6.11.4";
 const RESEARCH_GENERATION = "ARONSON-QRA-2026-08-22-1";
 const HYPOTHESIS_FREEZE_VERSION = "ARONSON-HYPOTHESES-2026-08-22-1";
 const QRA03_VIRTUAL_VERSION = "QRA03-VIRTUAL-1";
@@ -562,10 +562,15 @@ function renderQraLabTrades(){
   const lab=state.paperTrades.filter(t=>isStrictOosTrade(t)).sort((a,b)=>(b.openedAt||0)-(a.openedAt||0));
   if(!lab.length){ box.innerHTML='<div class="notice">Todavía no hay operaciones nuevas del Laboratorio QRA.</div>'; return; }
   box.innerHTML=lab.map(t=>{
+    const q=(t?.qraLab && typeof t.qraLab==="object")?t.qraLab:null;
     const actual=qraActualR(t), ladder=qraBranchR(t,"ladder"), trail020=qraBranchR(t,"trailing020"), trail=qraBranchR(t,"trailing025");
     const status=t.status==="open"?"ABIERTA":(actual!=null?`${actual>=0?"+":""}${fmt(actual,2)}R`:"CERRADA");
     const val=v=>v==null?"En seguimiento":`${v>=0?"+":""}${fmt(v,2)}R`;
-    return `<div class="result-card qra-trade-card"><span>${new Date(t.openedAt).toLocaleString("es-MX")} · ${t.interval||""}</span><strong>${t.symbol} · ${(t.side||"").toUpperCase()} · ${status}</strong><div class="qra-trade-lines"><div>CQ Control: <b>${status}</b></div><div>Solo LONG: <b>${(t.qraLab.soloLongAccepted ?? t.side==="long")?"ACEPTA":"RECHAZA"}</b></div><div>QRA-01: <b>${t.qraLab.qra01Accepted?"ACEPTA":"BLOQUEA"}</b> · BTC ${t.qraLab.btcRegime}</div><div>QRA + Escalera: <b>${t.qraLab.qra01Accepted?val(ladder):"NO TOMADA"}</b></div><div>Trailing 0.20R A/B: <b>${Number(t.openedAt||0)>=TRAILING_AB_STARTED_AT?val(trail020):"PRE-CORTE"}</b></div><div>Trailing 0.25R A/B: <b>${Number(t.openedAt||0)>=TRAILING_AB_STARTED_AT?val(trail):"PRE-CORTE"}</b></div><div>QRA + Trailing 0.25R: <b>${t.qraLab.qra01Accepted?val(trail):"NO TOMADA"}</b></div><div>QRA-03 virtual: <b>${fmt(Number(t.qraLab.qra03Virtual?.multiplier??1)*100,0)}%</b> del riesgo · ${Number(t.qraLab.qra03Observation?.sameDirectionOpen||0)+1} misma dirección</div><div>Benchmark BTC: <b>${t.qraLab.marketBenchmark?.status==="complete"?`${Number(t.qraLab.marketBenchmark.excessR)>=0?"+":""}${fmt(t.qraLab.marketBenchmark.excessR,2)}R exceso`:"En seguimiento"}</b></div></div></div>`;
+    if(!q){
+      const qStatus=t?.pendingActivation?"Pendiente de activación":"QRA pendiente";
+      return `<div class="result-card qra-trade-card"><span>${new Date(t.openedAt||t.activationAt||Date.now()).toLocaleString("es-MX")} · ${t.interval||""}</span><strong>${t.symbol} · ${(t.side||"").toUpperCase()} · ${status}</strong><div class="qra-trade-lines"><div>CQ Control: <b>${status}</b></div><div>Laboratorio QRA: <b>${qStatus}</b></div><div>Solo LONG / QRA-01 / QRA-03: <b>Se calculan al activar la entrada causal</b></div></div></div>`;
+    }
+    return `<div class="result-card qra-trade-card"><span>${new Date(t.openedAt).toLocaleString("es-MX")} · ${t.interval||""}</span><strong>${t.symbol} · ${(t.side||"").toUpperCase()} · ${status}</strong><div class="qra-trade-lines"><div>CQ Control: <b>${status}</b></div><div>Solo LONG: <b>${(q.soloLongAccepted ?? t.side==="long")?"ACEPTA":"RECHAZA"}</b></div><div>QRA-01: <b>${q.qra01Accepted?"ACEPTA":"BLOQUEA"}</b> · BTC ${q.btcRegime||"PENDIENTE"}</div><div>QRA + Escalera: <b>${q.qra01Accepted?val(ladder):"NO TOMADA"}</b></div><div>Trailing 0.20R A/B: <b>${Number(t.openedAt||0)>=TRAILING_AB_STARTED_AT?val(trail020):"PRE-CORTE"}</b></div><div>Trailing 0.25R A/B: <b>${Number(t.openedAt||0)>=TRAILING_AB_STARTED_AT?val(trail):"PRE-CORTE"}</b></div><div>QRA + Trailing 0.25R: <b>${q.qra01Accepted?val(trail):"NO TOMADA"}</b></div><div>QRA-03 virtual: <b>${fmt(Number(q.qra03Virtual?.multiplier??1)*100,0)}%</b> del riesgo · ${Number(q.qra03Observation?.sameDirectionOpen||0)+1} misma dirección</div><div>Benchmark BTC: <b>${q.marketBenchmark?.status==="complete"?`${Number(q.marketBenchmark.excessR)>=0?"+":""}${fmt(q.marketBenchmark.excessR,2)}R exceso`:"En seguimiento"}</b></div></div></div>`;
   }).join("");
 }
 
@@ -1804,7 +1809,7 @@ $("#newOosCohortBtn").onclick=()=>{
   state.autoPaper={...state.autoPaper,lastSignals:{}};
   saveAutoPaper();
   localStorage.setItem("quant_v611_oos_cohort_started_at",String(at));
-  localStorage.setItem("quant_v611_oos_cohort_meta",JSON.stringify({version:"QRA04-OOS-v6.11",startedAt:at,mode:"prospective-clean",strategyVersion:"6.11.3"}));
+  localStorage.setItem("quant_v611_oos_cohort_meta",JSON.stringify({version:"QRA04-OOS-v6.11",startedAt:at,mode:"prospective-clean",strategyVersion:"6.11.4"}));
   alert("Nueva cohorte OOS iniciada. Operaciones: 0. Estrategia y QRA-04 conservados.");
   location.reload();
 };

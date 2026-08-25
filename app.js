@@ -1727,6 +1727,20 @@ $("#saveWeightsBtn").onclick=()=>{
 $("#backupDataBtn").onclick=createFullBackup;
 $("#restoreDataBtn").onclick=()=>$("#restoreDataInput").click();
 $("#restoreDataInput").onchange=async e=>{const file=e.target.files?.[0];if(!file)return;try{await restoreFullBackup(file)}catch(err){alert("No se pudo cargar el respaldo: "+err.message)}finally{e.target.value=""}};
+$("#newOosCohortBtn").onclick=()=>{
+  if(!confirm("¿Iniciar una nueva cohorte OOS?\n\nSe borrarán SOLO las operaciones abiertas/cerradas de Pruebas. Se conservarán activos, pesos, configuración y los snapshots QRA-04 ya guardados."))return;
+  const at=Date.now();
+  state.paperTrades=[];
+  setPaperStorage("[]");
+  state.pendingPaperSignal=null;
+  // Evita que lastSignals heredadas impidan señales nuevas tras el reinicio.
+  state.autoPaper={...state.autoPaper,lastSignals:{}};
+  saveAutoPaper();
+  localStorage.setItem("quant_v611_oos_cohort_started_at",String(at));
+  localStorage.setItem("quant_v611_oos_cohort_meta",JSON.stringify({version:"QRA04-OOS-v6.11",startedAt:at,mode:"prospective-clean",strategyVersion:"6.11.0"}));
+  alert("Nueva cohorte OOS iniciada. Operaciones: 0. Estrategia y QRA-04 conservados.");
+  location.reload();
+};
 $("#resetDataBtn").onclick=()=>{if(confirm("¿Borrar favoritos, pesos, operaciones y configuración local?")){localStorage.clear();location.reload()}};
 $$(`[data-weight-preset]`).forEach(b=>b.onclick=()=>applyWeightPreset(b.dataset.weightPreset));
 $("#backToDashboard").onclick=()=>showView("dashboardView");

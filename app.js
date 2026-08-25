@@ -1,5 +1,5 @@
 
-// v6.10.7 · almacenamiento robusto + trailing prospectivo 0.20/0.25 intravela conservador
+// v6.11.0 · QRA-04 Market Quality/Breadth (solo instrumentación; motor operativo intacto)
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -25,13 +25,16 @@ const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS",
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const QRA_LAB_VERSION = "QRA-OOS-1";
-const APP_VERSION = "6.10.7";
+const APP_VERSION = "6.11.0";
 const RESEARCH_GENERATION = "ARONSON-QRA-2026-08-22-1";
 const HYPOTHESIS_FREEZE_VERSION = "ARONSON-HYPOTHESES-2026-08-22-1";
 const QRA03_VIRTUAL_VERSION = "QRA03-VIRTUAL-1";
 const QRA03_CAPS_VERSION = "QRA03-CAPS-2026-08-23-1";
 const QRA03_CAPS = Object.freeze([1,2,3,5,10]);
 const MARKET_BENCHMARK_VERSION = "BTC-PRIOR-CLOSE-1";
+const QRA04_VERSION = "QRA04-BREADTH-2026-08-24-1";
+const QRA04_STORAGE_KEY = "quant_qra04_breadth";
+const QRA04_MAX_SNAPSHOTS = 1500;
 const HYPOTHESIS_REGISTRY = Object.freeze({
   qra01:"Bloquear SHORT cuando BTC esté ALCISTA según prev-close-3bar-breakout.",
   qra03:"Reducir riesgo marginal cuando aumenta la exposición de la misma dirección; visor virtual, nunca modifica el control.",
@@ -206,9 +209,11 @@ function analyze(candles){
   const calc=f=>Math.round(Object.entries(f).reduce((s,[k,v])=>s+v*(state.weights[k]||0),0));
   const longScore=calc(longFactors),shortScore=calc(shortFactors);
   const decision=s=>s>=85?"Favorable":s>=70?"Esperar / Vigilar":"Evitar";
+  const ret5=i>=5?(signalPrice/closes[i-5]-1)*100:null, ret20=i>=20?(signalPrice/closes[i-20]-1)*100:null;
   return {longScore,shortScore,longDecision:decision(longScore),shortDecision:decision(shortScore),
     trend:signalPrice>e20[i]&&e20[i]>e50[i]?"Alcista":signalPrice<e20[i]&&e20[i]<e50[i]?"Bajista":"Mixta",
     rsi:rs[i],adx:ax[i],atrPct,volumeRatio:v20[i]?vols[i]/v20[i]:1,
+    signalPrice,signalEma20:e20[i],signalEma50:e50[i],signalEma200:e200[i],ret5,ret20,
     support:Math.min(...closedCandles.slice(-20).map(x=>x.l)),resistance:Math.max(...closedCandles.slice(-20).map(x=>x.h)),
     price,change:(price/signalPrice-1)*100,e20,e50,e200,longFactors,shortFactors};
 }
@@ -561,6 +566,36 @@ function renderScannerResults(){
   }).join("");
 }
 
+function qra04Median(values){
+  const a=values.filter(Number.isFinite).sort((x,y)=>x-y);if(!a.length)return null;
+  const m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2;
+}
+function qra04Pct(rows,predicate){return rows.length?100*rows.filter(predicate).length/rows.length:null}
+function qra04Std(values){
+  const a=values.filter(Number.isFinite);if(a.length<2)return null;const m=a.reduce((x,y)=>x+y,0)/a.length;
+  return Math.sqrt(a.reduce((s,x)=>s+(x-m)*(x-m),0)/(a.length-1));
+}
+function saveQra04BreadthSnapshot(rows,interval,universeCount){
+  // QRA-04 es observación pura: resume TODO el universo apto analizado y nunca interviene en candidatos/entradas.
+  if(!Array.isArray(rows)||!rows.length)return null;
+  const at=Date.now(), bestLong=rows.filter(r=>r.longScore>=r.shortScore), bestShort=rows.filter(r=>r.shortScore>r.longScore);
+  const snap={version:QRA04_VERSION,at,interval,universeCount:Number(universeCount||rows.length),analyzed:rows.length,
+    pctAboveEma20:qra04Pct(rows,r=>r.signalPrice>r.ema20),pctAboveEma50:qra04Pct(rows,r=>r.signalPrice>r.ema50),pctAboveEma200:qra04Pct(rows,r=>r.signalPrice>r.ema200),
+    pctBullStack:qra04Pct(rows,r=>r.signalPrice>r.ema20&&r.ema20>r.ema50&&r.ema50>r.ema200),pctBearStack:qra04Pct(rows,r=>r.signalPrice<r.ema20&&r.ema20<r.ema50&&r.ema50<r.ema200),
+    pctRsi50:qra04Pct(rows,r=>r.rsi>50),pctRsi60:qra04Pct(rows,r=>r.rsi>60),medianRsi:qra04Median(rows.map(r=>r.rsi)),medianAdx:qra04Median(rows.map(r=>r.adx)),pctAdx25:qra04Pct(rows,r=>r.adx>=25),
+    medianVolumeRatio:qra04Median(rows.map(r=>r.volumeRatio)),pctVolumeAbove1:qra04Pct(rows,r=>r.volumeRatio>=1),pctBestLong:100*bestLong.length/rows.length,pctBestShort:100*bestShort.length/rows.length,
+    signals85:rows.filter(r=>Math.max(r.longScore,r.shortScore)>=85).length,longSignals85:rows.filter(r=>r.longScore>=85&&r.longScore>=r.shortScore).length,shortSignals85:rows.filter(r=>r.shortScore>=85&&r.shortScore>r.longScore).length,
+    medianBestScore:qra04Median(rows.map(r=>Math.max(r.longScore,r.shortScore))),medianRet5:qra04Median(rows.map(r=>r.ret5)),medianRet20:qra04Median(rows.map(r=>r.ret20)),ret5Dispersion:qra04Std(rows.map(r=>r.ret5)),ret20Dispersion:qra04Std(rows.map(r=>r.ret20))};
+  try{
+    const history=JSON.parse(localStorage.getItem(QRA04_STORAGE_KEY)||"[]");history.push(snap);
+    if(history.length>QRA04_MAX_SNAPSHOTS)history.splice(0,history.length-QRA04_MAX_SNAPSHOTS);
+    localStorage.setItem(QRA04_STORAGE_KEY,JSON.stringify(history));
+    localStorage.setItem("quant_qra04_meta",JSON.stringify({version:QRA04_VERSION,mode:"research-only",startedAt:Number(localStorage.getItem("quant_qra04_started_at")||at),snapshots:history.length,lastAt:at}));
+    if(!localStorage.getItem("quant_qra04_started_at"))localStorage.setItem("quant_qra04_started_at",String(at));
+  }catch(e){console.warn("QRA-04 breadth storage",e)}
+  return snap;
+}
+
 async function scanAutoPaper(manual=false){
   readAutoPaperControls(); const a=state.autoPaper;
   if(!a.enabled&&!manual){
@@ -574,7 +609,7 @@ async function scanAutoPaper(manual=false){
   const scanRows=await mapWithConcurrency(universe,3,async sym=>{
     try{
       const candles=await getCandles(sym,a.interval,a.interval==="1w"?260:500),analysis=analyze(candles),signalIndex=Math.max(1,candles.length-2),signalCandle=candles[signalIndex];
-      const row={symbol:sym,longScore:analysis.longScore,shortScore:analysis.shortScore,price:analysis.price};
+      const row={symbol:sym,longScore:analysis.longScore,shortScore:analysis.shortScore,price:analysis.price,signalPrice:analysis.signalPrice,ema20:analysis.signalEma20,ema50:analysis.signalEma50,ema200:analysis.signalEma200,rsi:analysis.rsi,adx:analysis.adx,volumeRatio:analysis.volumeRatio,atrPct:analysis.atrPct,trend:analysis.trend,ret5:analysis.ret5,ret20:analysis.ret20};
       const candidates=[{side:"long",score:analysis.longScore},{side:"short",score:analysis.shortScore}].filter(x=>x.score>=a.threshold).sort((x,y)=>y.score-x.score);
       if(!candidates.length)return row;
       if(manual&&!a.enabled)return row;
@@ -591,9 +626,10 @@ async function scanAutoPaper(manual=false){
     }catch(e){console.warn("auto paper",sym,e);return null}
   });
   state.scannerResults=scanRows.filter(Boolean).sort((x,y)=>Math.max(y.longScore,y.shortScore)-Math.max(x.longScore,x.shortScore));
+  const qra04Snapshot=saveQra04BreadthSnapshot(state.scannerResults,a.interval,universe.length);
   renderScannerResults();
   saveAutoPaper();savePaperState();renderPaperTrades();
-  if(status)status.textContent=`${a.enabled?"Activo":"Barrido manual"} · Top 100 → ${universe.length} aptas · ${a.interval} · score ≥ ${a.threshold}${opened?` · ${opened} nueva${opened===1?"":"s"}`:" · sin señales nuevas"}`;
+  if(status)status.textContent=`${a.enabled?"Activo":"Barrido manual"} · Top 100 → ${universe.length} aptas · ${a.interval} · score ≥ ${a.threshold}${opened?` · ${opened} nueva${opened===1?"":"s"}`:" · sin señales nuevas"}${qra04Snapshot?" · QRA-04 ✓":""}`;
 }
 
 function activeDecision(d,mode){return mode==="short"?d.shortDecision:d.longDecision}

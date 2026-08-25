@@ -1,3 +1,13 @@
+# Centro Quant v6.11.0 · QRA-04 Market Quality/Breadth
+
+Instrumentación prospectiva únicamente. **No cambia el motor operativo**, Score, pesos, LONG/SHORT, stop 3%, target 9%, riesgo 1%, QRA-01/QRA-03 ni salidas.
+
+- En cada barrido Top 100 guarda un snapshot compacto `quant_qra04_breadth` del universo apto realmente analizado.
+- Registra % sobre EMA20/50/200, alineación EMA alcista/bajista, RSI >50/>60 y mediana, ADX mediano/% >25, volumen relativo, dirección dominante, señales >=85, score mediano, retornos 5/20 velas y dispersión.
+- QRA-04 es `research-only`: no bloquea, prioriza, redimensiona ni crea operaciones.
+- Conserva hasta 1,500 snapshots y entra automáticamente en los respaldos completos por usar claves `quant_`.
+- El estado del radar muestra `QRA-04 ✓` cuando el snapshot del barrido fue guardado.
+
 # Centro Quant v6.9.8
 
 Extiende exclusivamente el laboratorio histórico Aronson-QRA. No cambia las reglas del paper trading ni la cohorte prospectiva.

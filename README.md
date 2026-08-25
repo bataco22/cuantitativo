@@ -1,4 +1,4 @@
-# Centro Quant v6.11.0 · QRA-04 Market Quality/Breadth
+# Centro Quant v6.11.2 · QRA-04 Market Quality/Breadth
 
 Instrumentación prospectiva únicamente. **No cambia el motor operativo**, Score, pesos, LONG/SHORT, stop 3%, target 9%, riesgo 1%, QRA-01/QRA-03 ni salidas.
 
@@ -148,3 +148,13 @@ No cambia Score, stop 3%, objetivo 9%, riesgo 1%, QRA ni el motor operativo.
 - Ambos trailing prospectivos usan la misma convención intravela conservadora que el backtest v6.10.6.
 - Operaciones abiertas antes del corte 0.20/0.25 no se convierten retrospectivamente en evidencia 0.20R.
 - QRA-01, QRA-03, caps, Score, stop 3%, target 9% y riesgo 1% permanecen sin cambios.
+
+
+## v6.11.2 · Corrección causal intrabar
+- Corrige la apertura retrospectiva detectada tras el reset OOS.
+- Las señales automáticas ya no se consideran abiertas desde el inicio de una vela que empezó antes del escaneo.
+- Una señal se arma en el momento del escaneo y se ejecuta al **open del siguiente minuto completo** (`NEXT_1M_OPEN_CAUSAL_V1`).
+- Stop 3%, objetivo 9% y tamaño de riesgo se recalculan desde ese precio ejecutable.
+- Stop/target, MFE/MAE, escalera, trailing y `rPath` se siguen con velas de 1 minuto desde la activación, evitando usar máximos/mínimos previos a la existencia de la operación.
+- QRA-04 sigue siendo sólo instrumentación; el score y sus pesos permanecen intactos.
+- Tras instalar, iniciar una nueva cohorte OOS y descartar la cohorte v6.11.0 contaminada.

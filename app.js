@@ -1,5 +1,5 @@
 
-// v6.11.0 · QRA-04 Market Quality/Breadth (solo instrumentación; motor operativo intacto)
+// v6.11.2 · QRA-04 + ejecución causal intrabar 1m (sin look-ahead)
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -25,7 +25,7 @@ const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS",
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const QRA_LAB_VERSION = "QRA-OOS-1";
-const APP_VERSION = "6.11.0";
+const APP_VERSION = "6.11.2";
 const RESEARCH_GENERATION = "ARONSON-QRA-2026-08-22-1";
 const HYPOTHESIS_FREEZE_VERSION = "ARONSON-HYPOTHESES-2026-08-22-1";
 const QRA03_VIRTUAL_VERSION = "QRA03-VIRTUAL-1";
@@ -432,7 +432,7 @@ async function getQraBtcRegime(atTime=Date.now()){
   return out;
 }
 function qraExposureSnapshot(side,openedAt){
-  const peers=state.paperTrades.filter(t=>t.status==="open"&&t.side===side&&Number(t.openedAt)<=Number(openedAt));
+  const peers=state.paperTrades.filter(t=>t.status==="open"&&!t.pendingActivation&&t.side===side&&Number(t.openedAt)<=Number(openedAt));
   return {sameDirectionOpen:peers.length,sameDirectionRiskCash:peers.reduce((s,t)=>s+Number(t.riskCash||0),0)};
 }
 function qra03VirtualDecision(exposure,riskCash,capital){
@@ -616,12 +616,14 @@ async function scanAutoPaper(manual=false){
       const pick=candidates[0],key=`${sym}:${a.interval}:${pick.side}`,signalId=signalCandle.t;
       const alreadyOpen=state.paperTrades.some(t=>t.status==="open"&&t.symbol===sym&&t.interval===a.interval&&t.side===pick.side&&t.auto);
       if(alreadyOpen||a.lastSignals[key]===signalId)return row;
-      const entry=signalCandle.c,lv=paperLevels(entry,pick.side,"percent",a.stopPct,"percent",a.targetPct),riskDist=Math.abs(entry-lv.stop),rewardDist=Math.abs(lv.target-entry),rr=riskDist?rewardDist/riskDist:0;
+      // v6.11.2: una señal descubierta a mitad de vela NO puede retroceder al inicio de esa vela.
+      // Se arma la operación para ejecutarse al OPEN del siguiente minuto completo. Así toda la
+      // vela usada para stop/target/MFE/MAE ocurre después de que la operación existe.
+      const createdAt=Date.now(), openedAt=nextExecutionMinute(createdAt), referenceEntry=Number(analysis.price||signalCandle.c);
+      const refLv=paperLevels(referenceEntry,pick.side,"percent",a.stopPct,"percent",a.targetPct),refRiskDist=Math.abs(referenceEntry-refLv.stop),refRewardDist=Math.abs(refLv.target-referenceEntry),rr=refRiskDist?refRewardDist/refRiskDist:0;
       if(rr<3)return row;
-      const riskCash=a.capital*a.riskPct/100,qty=riskDist?riskCash/riskDist:0;
-      const openedAt=(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1)+1;
-      const qraLab=await buildQraLabSnapshot(pick.side,openedAt,a.interval,riskCash,a.capital);
-      state.paperTrades.unshift({id:Date.now()+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry,stop:lv.stop,target:lv.target,openedAt,status:"open",current:analysis.price,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*rewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:buildResearchSnapshot(analysis,pick.side),researchMeta:buildResearchMeta(),notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez`,auto:true,entryTimingFixed:true,monitorFrom:openedAt,closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qraLab});
+      const riskCash=a.capital*a.riskPct/100,qty=refRiskDist?riskCash/refRiskDist:0;
+      state.paperTrades.unshift({id:createdAt+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry:referenceEntry,stop:refLv.stop,target:refLv.target,openedAt,status:"open",current:referenceEntry,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*refRewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:buildResearchSnapshot(analysis,pick.side),researchMeta:buildResearchMeta(),notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez · ejecución causal al siguiente minuto`,auto:true,entryTimingFixed:true,createdAt,signalCandleAt:+signalCandle.t,signalCandleCloseAt:+(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1),executionModel:"NEXT_1M_OPEN_CAUSAL_V1",monitorInterval:"1m",pendingActivation:true,activationAt:openedAt,plannedStopPct:a.stopPct,plannedTargetPct:a.targetPct,monitorFrom:openedAt,closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qraLab:null});
       a.lastSignals[key]=signalId;opened++; return row;
     }catch(e){console.warn("auto paper",sym,e);return null}
   });
@@ -1153,6 +1155,26 @@ async function createPaperTrade(){
 function intervalMs(interval){
   return ({"15m":15*60e3,"1h":60*60e3,"4h":4*60*60e3,"1d":24*60*60e3,"1w":7*24*60*60e3})[interval]||60*60e3;
 }
+function nextExecutionMinute(ts){
+  const minute=60*1000;
+  return Math.floor(Number(ts)/minute)*minute+minute;
+}
+function monitoringInterval(t){
+  return t?.executionModel==="NEXT_1M_OPEN_CAUSAL_V1"?"1m":t.interval;
+}
+async function activateCausalTrade(t,c){
+  if(!t?.pendingActivation) return;
+  const entry=Number(c?.o); if(!(entry>0)) throw new Error("No se pudo obtener el open causal de activación");
+  const stopPct=Number(t.plannedStopPct??3),targetPct=Number(t.plannedTargetPct??9);
+  const lv=paperLevels(entry,t.side,"percent",stopPct,"percent",targetPct);
+  const riskDist=Math.abs(entry-lv.stop),rewardDist=Math.abs(lv.target-entry);
+  t.entry=entry;t.stop=lv.stop;t.target=lv.target;t.current=entry;
+  t.qty=riskDist?Number(t.riskCash||0)/riskDist:0;t.potentialProfit=t.qty*rewardDist;t.rr=riskDist?rewardDist/riskDist:0;
+  t.openedAt=Number(t.activationAt||c.t);t.monitorFrom=t.openedAt;
+  // Mientras se construye QRA, esta operación sigue marcada como pendiente para que no se cuente a sí misma.
+  t.qraLab=await buildQraLabSnapshot(t.side,t.openedAt,t.interval,t.riskCash,t.capital);
+  t.pendingActivation=false;t.activatedAt=Date.now();
+}
 function tradeResultPct(t,exit){
   if(!(t?.entry>0&&exit>0)) return 0;
   return (t.side==="long"?(exit-t.entry):(t.entry-exit))/t.entry*100;
@@ -1351,13 +1373,14 @@ function renderPaperMonitor(){
 async function checkOnePaperTrade(t){
   const before=t.status;
   try{
-    const step=intervalMs(t.interval);
+    if(t.pendingActivation && Date.now()<Number(t.activationAt||t.openedAt||0)) return {ok:true,closed:false,pending:true};
+    const monitorInt=monitoringInterval(t),step=intervalMs(monitorInt);
     let startTime=Math.max(firstSafeCandleTime(t),Number(t.monitorFrom||0));
     let all=[];
     // Pagina para poder recuperarse después de una desconexión larga sin quedar limitado
     // a las primeras 1000 velas de la operación.
     for(let page=0;page<20;page++){
-      const raw=await api("/klines",{symbol:t.symbol+"USDT",interval:t.interval,startTime,limit:1000});
+      const raw=await api("/klines",{symbol:t.symbol+"USDT",interval:monitorInt,startTime,limit:1000});
       if(!raw.length) break;
       const batch=raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5],ct:+x[6]}));
       all.push(...batch);
@@ -1367,6 +1390,11 @@ async function checkOnePaperTrade(t){
       startTime=next;
     }
     if(!all.length) return {ok:false,closed:false,error:"Sin velas devueltas"};
+    if(t.pendingActivation){
+      const first=all.find(c=>Number(c.t)>=Number(t.activationAt||t.openedAt||0));
+      if(!first) return {ok:true,closed:false,pending:true};
+      await activateCausalTrade(t,first);
+    }
     t.current=all.at(-1).c;
     for(const c of all){
       if(c.t<firstSafeCandleTime(t)) continue;
@@ -1737,7 +1765,7 @@ $("#newOosCohortBtn").onclick=()=>{
   state.autoPaper={...state.autoPaper,lastSignals:{}};
   saveAutoPaper();
   localStorage.setItem("quant_v611_oos_cohort_started_at",String(at));
-  localStorage.setItem("quant_v611_oos_cohort_meta",JSON.stringify({version:"QRA04-OOS-v6.11",startedAt:at,mode:"prospective-clean",strategyVersion:"6.11.0"}));
+  localStorage.setItem("quant_v611_oos_cohort_meta",JSON.stringify({version:"QRA04-OOS-v6.11",startedAt:at,mode:"prospective-clean",strategyVersion:"6.11.2"}));
   alert("Nueva cohorte OOS iniciada. Operaciones: 0. Estrategia y QRA-04 conservados.");
   location.reload();
 };

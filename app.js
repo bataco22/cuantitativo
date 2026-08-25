@@ -1,5 +1,5 @@
 
-// v6.11.2 · QRA-04 + ejecución causal intrabar 1m (sin look-ahead)
+// v6.11.3 · QRA-04 + ejecución causal intrabar 1m + radar robusto
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -25,7 +25,7 @@ const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS",
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const QRA_LAB_VERSION = "QRA-OOS-1";
-const APP_VERSION = "6.11.2";
+const APP_VERSION = "6.11.3";
 const RESEARCH_GENERATION = "ARONSON-QRA-2026-08-22-1";
 const HYPOTHESIS_FREEZE_VERSION = "ARONSON-HYPOTHESES-2026-08-22-1";
 const QRA03_VIRTUAL_VERSION = "QRA03-VIRTUAL-1";
@@ -261,6 +261,21 @@ async function mapWithConcurrency(items,limit,worker){
   const out=[];let next=0;
   async function run(){while(next<items.length){const i=next++;try{out[i]=await worker(items[i],i)}catch(e){out[i]=null}}}
   await Promise.all(Array.from({length:Math.min(limit,items.length)},run));return out;
+}
+
+const SCANNER_SYMBOL_TIMEOUT_MS=12000;
+let autoPaperScanInFlight=false;
+async function getScannerCandles(symbol,interval="1d",limit=500){
+  const url=new URL(API_BASE+"/klines");
+  Object.entries({symbol:symbol+"USDT",interval,limit}).forEach(([k,v])=>url.searchParams.set(k,v));
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),SCANNER_SYMBOL_TIMEOUT_MS);
+  try{
+    const r=await fetch(url,{signal:controller.signal,cache:"no-store"});
+    if(!r.ok){const e=new Error("API "+r.status);e.status=r.status;throw e;}
+    const raw=await r.json();
+    return raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5],ct:+x[6]}));
+  }finally{clearTimeout(timeout)}
 }
 
 // Señal principal: 1D define contexto/tendencia y 4H afina la entrada.
@@ -597,41 +612,65 @@ function saveQra04BreadthSnapshot(rows,interval,universeCount){
 }
 
 async function scanAutoPaper(manual=false){
-  readAutoPaperControls(); const a=state.autoPaper;
-  if(!a.enabled&&!manual){
-    const status=$("#autoPaperStatus");if(status)status.textContent="Apagado";
+  const status=$("#autoPaperStatus");
+  if(autoPaperScanInFlight){
+    if(status)status.textContent="Barrido anterior aún en curso · evitando escaneo superpuesto…";
     return;
   }
-  const status=$("#autoPaperStatus");if(status)status.textContent="Preparando Top 100 y filtros…";
-  let opened=0, universe=[];
-  try{universe=await getScannerUniverse()}catch(e){console.warn("scanner universe",e);if(status)status.textContent="No se pudo cargar el universo de mercado";return}
-  if(status)status.textContent=`Escaneando ${universe.length} criptos aptas del Top 100…`;
-  const scanRows=await mapWithConcurrency(universe,3,async sym=>{
-    try{
-      const candles=await getCandles(sym,a.interval,a.interval==="1w"?260:500),analysis=analyze(candles),signalIndex=Math.max(1,candles.length-2),signalCandle=candles[signalIndex];
-      const row={symbol:sym,longScore:analysis.longScore,shortScore:analysis.shortScore,price:analysis.price,signalPrice:analysis.signalPrice,ema20:analysis.signalEma20,ema50:analysis.signalEma50,ema200:analysis.signalEma200,rsi:analysis.rsi,adx:analysis.adx,volumeRatio:analysis.volumeRatio,atrPct:analysis.atrPct,trend:analysis.trend,ret5:analysis.ret5,ret20:analysis.ret20};
-      const candidates=[{side:"long",score:analysis.longScore},{side:"short",score:analysis.shortScore}].filter(x=>x.score>=a.threshold).sort((x,y)=>y.score-x.score);
-      if(!candidates.length)return row;
-      if(manual&&!a.enabled)return row;
-      const pick=candidates[0],key=`${sym}:${a.interval}:${pick.side}`,signalId=signalCandle.t;
-      const alreadyOpen=state.paperTrades.some(t=>t.status==="open"&&t.symbol===sym&&t.interval===a.interval&&t.side===pick.side&&t.auto);
-      if(alreadyOpen||a.lastSignals[key]===signalId)return row;
-      // v6.11.2: una señal descubierta a mitad de vela NO puede retroceder al inicio de esa vela.
-      // Se arma la operación para ejecutarse al OPEN del siguiente minuto completo. Así toda la
-      // vela usada para stop/target/MFE/MAE ocurre después de que la operación existe.
-      const createdAt=Date.now(), openedAt=nextExecutionMinute(createdAt), referenceEntry=Number(analysis.price||signalCandle.c);
-      const refLv=paperLevels(referenceEntry,pick.side,"percent",a.stopPct,"percent",a.targetPct),refRiskDist=Math.abs(referenceEntry-refLv.stop),refRewardDist=Math.abs(refLv.target-referenceEntry),rr=refRiskDist?refRewardDist/refRiskDist:0;
-      if(rr<3)return row;
-      const riskCash=a.capital*a.riskPct/100,qty=refRiskDist?riskCash/refRiskDist:0;
-      state.paperTrades.unshift({id:createdAt+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry:referenceEntry,stop:refLv.stop,target:refLv.target,openedAt,status:"open",current:referenceEntry,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*refRewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:buildResearchSnapshot(analysis,pick.side),researchMeta:buildResearchMeta(),notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez · ejecución causal al siguiente minuto`,auto:true,entryTimingFixed:true,createdAt,signalCandleAt:+signalCandle.t,signalCandleCloseAt:+(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1),executionModel:"NEXT_1M_OPEN_CAUSAL_V1",monitorInterval:"1m",pendingActivation:true,activationAt:openedAt,plannedStopPct:a.stopPct,plannedTargetPct:a.targetPct,monitorFrom:openedAt,closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qraLab:null});
-      a.lastSignals[key]=signalId;opened++; return row;
-    }catch(e){console.warn("auto paper",sym,e);return null}
-  });
-  state.scannerResults=scanRows.filter(Boolean).sort((x,y)=>Math.max(y.longScore,y.shortScore)-Math.max(x.longScore,x.shortScore));
-  const qra04Snapshot=saveQra04BreadthSnapshot(state.scannerResults,a.interval,universe.length);
-  renderScannerResults();
-  saveAutoPaper();savePaperState();renderPaperTrades();
-  if(status)status.textContent=`${a.enabled?"Activo":"Barrido manual"} · Top 100 → ${universe.length} aptas · ${a.interval} · score ≥ ${a.threshold}${opened?` · ${opened} nueva${opened===1?"":"s"}`:" · sin señales nuevas"}${qra04Snapshot?" · QRA-04 ✓":""}`;
+  autoPaperScanInFlight=true;
+  let finalStatus="";
+  try{
+    readAutoPaperControls(); const a=state.autoPaper;
+    if(!a.enabled&&!manual){finalStatus="Apagado";return;}
+    if(status)status.textContent="Preparando Top 100 y filtros…";
+    let opened=0, universe=[];
+    try{universe=await getScannerUniverse()}catch(e){
+      console.warn("scanner universe",e);
+      finalStatus="No se pudo cargar el universo de mercado";
+      return;
+    }
+    if(status)status.textContent=`Escaneando ${universe.length} criptos aptas del Top 100…`;
+    let completed=0,failed=0;
+    const scanRows=await mapWithConcurrency(universe,3,async sym=>{
+      try{
+        const candles=await getScannerCandles(sym,a.interval,a.interval==="1w"?260:500),analysis=analyze(candles),signalIndex=Math.max(1,candles.length-2),signalCandle=candles[signalIndex];
+        const row={symbol:sym,longScore:analysis.longScore,shortScore:analysis.shortScore,price:analysis.price,signalPrice:analysis.signalPrice,ema20:analysis.signalEma20,ema50:analysis.signalEma50,ema200:analysis.signalEma200,rsi:analysis.rsi,adx:analysis.adx,volumeRatio:analysis.volumeRatio,atrPct:analysis.atrPct,trend:analysis.trend,ret5:analysis.ret5,ret20:analysis.ret20};
+        const candidates=[{side:"long",score:analysis.longScore},{side:"short",score:analysis.shortScore}].filter(x=>x.score>=a.threshold).sort((x,y)=>y.score-x.score);
+        if(!candidates.length)return row;
+        if(manual&&!a.enabled)return row;
+        const pick=candidates[0],key=`${sym}:${a.interval}:${pick.side}`,signalId=signalCandle.t;
+        const alreadyOpen=state.paperTrades.some(t=>t.status==="open"&&t.symbol===sym&&t.interval===a.interval&&t.side===pick.side&&t.auto);
+        if(alreadyOpen||a.lastSignals[key]===signalId)return row;
+        // v6.11.3: una señal descubierta a mitad de vela NO puede retroceder al inicio de esa vela.
+        // Se arma la operación para ejecutarse al OPEN del siguiente minuto completo. Así toda la
+        // vela usada para stop/target/MFE/MAE ocurre después de que la operación existe.
+        const createdAt=Date.now(), openedAt=nextExecutionMinute(createdAt), referenceEntry=Number(analysis.price||signalCandle.c);
+        const refLv=paperLevels(referenceEntry,pick.side,"percent",a.stopPct,"percent",a.targetPct),refRiskDist=Math.abs(referenceEntry-refLv.stop),refRewardDist=Math.abs(refLv.target-referenceEntry),rr=refRiskDist?refRewardDist/refRiskDist:0;
+        if(rr<3)return row;
+        const riskCash=a.capital*a.riskPct/100,qty=refRiskDist?riskCash/refRiskDist:0;
+        state.paperTrades.unshift({id:createdAt+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry:referenceEntry,stop:refLv.stop,target:refLv.target,openedAt,status:"open",current:referenceEntry,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*refRewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:buildResearchSnapshot(analysis,pick.side),researchMeta:buildResearchMeta(),notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez · ejecución causal al siguiente minuto`,auto:true,entryTimingFixed:true,createdAt,signalCandleAt:+signalCandle.t,signalCandleCloseAt:+(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1),executionModel:"NEXT_1M_OPEN_CAUSAL_V1",monitorInterval:"1m",pendingActivation:true,activationAt:openedAt,plannedStopPct:a.stopPct,plannedTargetPct:a.targetPct,monitorFrom:openedAt,closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qraLab:null});
+        a.lastSignals[key]=signalId;opened++; return row;
+      }catch(e){
+        failed++;
+        console.warn("auto paper",sym,e?.name==="AbortError"?"timeout":e);
+        return null;
+      }finally{
+        completed++;
+        if(status)status.textContent=`Escaneando ${completed}/${universe.length} · ${failed} sin respuesta${opened?` · ${opened} nueva${opened===1?"":"s"}`:""}…`;
+      }
+    });
+    state.scannerResults=scanRows.filter(Boolean).sort((x,y)=>Math.max(y.longScore,y.shortScore)-Math.max(x.longScore,x.shortScore));
+    const qra04Snapshot=saveQra04BreadthSnapshot(state.scannerResults,a.interval,universe.length);
+    renderScannerResults();
+    saveAutoPaper();savePaperState();renderPaperTrades();
+    finalStatus=`${a.enabled?"Activo":"Barrido manual"} · ${completed}/${universe.length} revisadas${failed?` · ${failed} sin respuesta`:""} · ${a.interval} · score ≥ ${a.threshold}${opened?` · ${opened} nueva${opened===1?"":"s"}`:" · sin señales nuevas"}${qra04Snapshot?" · QRA-04 ✓":""}`;
+  }catch(e){
+    console.warn("scanAutoPaper",e);
+    finalStatus="Barrido terminado con error · se reintentará en el siguiente ciclo";
+  }finally{
+    autoPaperScanInFlight=false;
+    if(status&&finalStatus)status.textContent=finalStatus;
+  }
 }
 
 function activeDecision(d,mode){return mode==="short"?d.shortDecision:d.longDecision}
@@ -1765,7 +1804,7 @@ $("#newOosCohortBtn").onclick=()=>{
   state.autoPaper={...state.autoPaper,lastSignals:{}};
   saveAutoPaper();
   localStorage.setItem("quant_v611_oos_cohort_started_at",String(at));
-  localStorage.setItem("quant_v611_oos_cohort_meta",JSON.stringify({version:"QRA04-OOS-v6.11",startedAt:at,mode:"prospective-clean",strategyVersion:"6.11.2"}));
+  localStorage.setItem("quant_v611_oos_cohort_meta",JSON.stringify({version:"QRA04-OOS-v6.11",startedAt:at,mode:"prospective-clean",strategyVersion:"6.11.3"}));
   alert("Nueva cohorte OOS iniciada. Operaciones: 0. Estrategia y QRA-04 conservados.");
   location.reload();
 };

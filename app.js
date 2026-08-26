@@ -1,5 +1,5 @@
 
-// v6.11.6 · Entrada sincronizada por cierre de vela + v6.11.5 QRA-05 research-only
+// v6.11.7 · QRA-06 Timing/Contexto OOS research-only sobre v6.11.6 congelada
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -25,7 +25,7 @@ const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS",
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const QRA_LAB_VERSION = "QRA-OOS-1";
-const APP_VERSION = "6.11.6";
+const APP_VERSION = "6.11.7";
 const ENTRY_SYNC_VERSION = "CLOSE_SYNC_CAUSAL_V1";
 const ENTRY_SYNC_STARTED_AT = Number(localStorage.getItem("quant_entry_sync_started_at")||0) || Date.now();
 localStorage.setItem("quant_entry_sync_started_at",String(ENTRY_SYNC_STARTED_AT));
@@ -41,13 +41,18 @@ const QRA04_MAX_SNAPSHOTS = 1500;
 const QRA05_VERSION = "QRA05-PHASE-2026-08-25-1";
 const QRA05_STARTED_AT = Number(localStorage.getItem("quant_qra05_started_at")||0) || Date.now();
 localStorage.setItem("quant_qra05_started_at",String(QRA05_STARTED_AT));
+const QRA06_VERSION = "QRA06-TIMING-CONTEXT-OOS-1";
+const QRA06_STARTED_AT = Number(localStorage.getItem("quant_qra06_started_at")||0) || Date.now();
+localStorage.setItem("quant_qra06_started_at",String(QRA06_STARTED_AT));
+const QRA06_TFS = Object.freeze(["15m","1h","4h","1d"]);
 const HYPOTHESIS_REGISTRY = Object.freeze({
   qra01:"Bloquear SHORT cuando BTC esté ALCISTA según prev-close-3bar-breakout.",
   qra03:"Reducir riesgo marginal cuando aumenta la exposición de la misma dirección; visor virtual, nunca modifica el control.",
   exits:"Control 3R frente a Escalera y Trailing 0.20R/0.25R como comparadores virtuales prospectivos.",
   score:"Evaluar prospectivamente calibración y aporte incremental de los componentes del score.",
   benchmark:"Medir rendimiento de Quant frente a BTC direccional durante la misma ventana, sin usarlo para ejecutar.",
-  qra05:"Clasificar prospectivamente la fase del movimiento al nacer la señal (temprano, maduro, extensión, lateral, retroceso, reanudación o transición), sin bloquear ni redimensionar operaciones."
+  qra05:"Clasificar prospectivamente la fase del movimiento al nacer la señal (temprano, maduro, extensión, lateral, retroceso, reanudación o transición), sin bloquear ni redimensionar operaciones.",
+  qra06:"Medir fuera de muestra contexto multi-timeframe y madurez/timing de la entrada (temprana, espera pullback, extendida o contra contexto), estrictamente observacional y sin tocar el control."
 });
 // Cortes preregistrados y congelados. No dependen de cuándo se actualice/reinstale la PWA.
 // 19/8/2026 11:32:53 a.m. MX: laboratorio QRA legado (referencia histórica, NO OOS estricta).
@@ -406,6 +411,76 @@ function qra05MarketPhase(a,candles,side){
   return {version:QRA05_VERSION,mode:"research-only",startedAt:QRA05_STARTED_AT,evaluatedAt:Date.now(),phase,code,reason,side,
     metrics:{ret5Dir:ret5,ret20Dir:ret20,atrPct,distanceEma20Atr,ema20Slope5Pct,pullbackFromExtremeAtr,directionalCloses,rsi,adx,volumeRatio,trend:a?.trend||null,normalizedImpulse},
     virtualDecision:"OBSERVAR",accepted:null,causal:true};
+}
+
+
+
+// QRA-06 · "ojos cuantitativos" research-only.
+// IMPORTANTE: se ejecuta DESPUÉS de que la operación de control ya fue creada.
+// Consulta cada timeframe con endTime anterior a createdAt, por lo que no puede usar información futura
+// ni retrasar/bloquear/modificar la entrada, stop, target o cierre del control.
+const qra06InFlight=new Set();
+async function qra06CandlesAt(symbol,interval,atTime){
+  const limit=260;
+  const raw=await api("/klines",{symbol:symbol+"USDT",interval,endTime:Math.max(0,Number(atTime)-1),limit});
+  return raw.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5],ct:+x[6]}));
+}
+function qra06FrameSnapshot(a,candles,side){
+  const closed=Array.isArray(candles)?candles.slice(0,-1):[];
+  const sig=closed.at(-1)||null, price=Number(a?.signalPrice||sig?.c||0);
+  const closes=closed.map(x=>Number(x.c)), e55=closes.length?ema(closes,55):[];
+  const ema55=Number(e55.at(-1)||0),ema55Past=Number(e55[Math.max(0,e55.length-6)]||ema55||0);
+  const ema55Slope5Pct=ema55Past>0?(ema55/ema55Past-1)*100:null;
+  const recent=closed.slice(-20),hi=recent.length?Math.max(...recent.map(x=>Number(x.h))):null,lo=recent.length?Math.min(...recent.map(x=>Number(x.l))):null;
+  const rangePos20=(hi!=null&&lo!=null&&hi>lo)?(price-lo)/(hi-lo):null;
+  const atrAbs=price*Number(a?.atrPct||0)/100;
+  const dist=(x)=>atrAbs>0&&Number(x)>0?(price-Number(x))/atrAbs:null;
+  const phase=qra05MarketPhase(a,candles,side);
+  const prior=recent.slice(0,-1),last=recent.at(-1);
+  const breakoutUp=!!(last&&prior.length&&Number(last.h)>Math.max(...prior.map(x=>Number(x.h))));
+  const breakoutDown=!!(last&&prior.length&&Number(last.l)<Math.min(...prior.map(x=>Number(x.l))));
+  return {
+    score:side==="long"?a?.longScore:a?.shortScore,oppositeScore:side==="long"?a?.shortScore:a?.longScore,trend:a?.trend||null,
+    signalPrice:price,ema20:Number(a?.signalEma20||0)||null,ema50:Number(a?.signalEma50||0)||null,ema55:ema55||null,ema200:Number(a?.signalEma200||0)||null,
+    ema55Slope5Pct,rsi:Number(a?.rsi),adx:Number(a?.adx),atrPct:Number(a?.atrPct),volumeRatio:Number(a?.volumeRatio),ret5:a?.ret5??null,ret20:a?.ret20??null,
+    rangePos20,distEma20Atr:dist(a?.signalEma20),distEma55Atr:dist(ema55),distEma200Atr:dist(a?.signalEma200),breakoutUp,breakoutDown,
+    phase:phase?.phase||null,phaseCode:phase?.code||null
+  };
+}
+function qra06VirtualDecision(side,frames,entryInterval){
+  const d=frames?.["1d"],h4=frames?.["4h"],h1=frames?.["1h"],m15=frames?.["15m"],entry=frames?.[entryInterval]||m15||h1||h4||d;
+  const favors=(f)=>f?Number(f.score)>=Number(f.oppositeScore):null;
+  const dFav=favors(d),h4Fav=favors(h4);
+  const higherBias=(dFav===true&&h4Fav===true)?"ALINEADO":(dFav===false&&h4Fav===false)?"CONTRA":"MIXTO";
+  const rp=Number(entry?.rangePos20);
+  const atExtreme=Number.isFinite(rp)?(side==="long"?rp>=.80:rp<=.20):false;
+  const mature=["MATURE_IMPULSE","EXTENSION"].includes(entry?.phaseCode);
+  const early=["EARLY_IMPULSE","RESUMPTION"].includes(entry?.phaseCode);
+  let decision="OBSERVAR",reason="Contexto o timing sin condición dominante.";
+  if(higherBias==="CONTRA"){decision="CONTRA_CONTEXTO";reason="1D y 4H favorecen el lado opuesto a la señal.";}
+  else if(higherBias==="ALINEADO"&&(mature||atExtreme)){decision="ESPERAR_PULLBACK";reason="Dirección superior alineada, pero la entrada llega madura/extendida o en extremo del rango reciente.";}
+  else if(higherBias==="ALINEADO"&&early&&!atExtreme){decision="TIMING_CANDIDATO";reason="Dirección superior alineada y fase de entrada temprana/reanudación sin extremo de rango.";}
+  else if(atExtreme){decision="RIESGO_ENTRADA_TARDIA";reason="La señal aparece cerca del extremo direccional del rango de 20 velas.";}
+  return {decision,reason,higherBias,entryInterval,atExtreme,mature,early,lower15mPhase:m15?.phase||null,mid1hPhase:h1?.phase||null};
+}
+async function buildQra06Context(t){
+  const atTime=Number(t.createdAt||t.signalCandleCloseAt||Date.now());
+  const pairs=await Promise.all(QRA06_TFS.map(async tf=>{
+    try{const c=await qra06CandlesAt(t.symbol,tf,atTime);return [tf,qra06FrameSnapshot(analyze(c),c,t.side)];}
+    catch(e){return [tf,{error:String(e?.message||e)}];}
+  }));
+  const frames=Object.fromEntries(pairs);
+  const virtual=qra06VirtualDecision(t.side,frames,t.interval);
+  return {version:QRA06_VERSION,mode:"research-only",startedAt:QRA06_STARTED_AT,observedAt:Date.now(),asOf:atTime,strictPointInTime:true,controlUntouched:true,side:t.side,symbol:t.symbol,signalInterval:t.interval,frames,virtualDecision:virtual.decision,virtualReason:virtual.reason,diagnostics:virtual};
+}
+async function qra06ObserveNewTrades(){
+  const pending=state.paperTrades.filter(t=>t?.auto&&Number(t.createdAt||0)>=QRA06_STARTED_AT&&t.entrySyncVersion===ENTRY_SYNC_VERSION&&!t.qra06Context&&!qra06InFlight.has(t.id)).slice(0,2);
+  for(const t of pending){
+    qra06InFlight.add(t.id);
+    try{t.qra06Context=await buildQra06Context(t);savePaperState();renderPaperTrades();}
+    catch(e){t.qra06Context={version:QRA06_VERSION,mode:"research-only",observedAt:Date.now(),asOf:Number(t.createdAt||0),error:String(e?.message||e),controlUntouched:true};}
+    finally{qra06InFlight.delete(t.id);}
+  }
 }
 
 function buildResearchSnapshot(a,side){
@@ -1165,6 +1240,7 @@ function compactClosedTradeRecord(t){
       qra05:q5?{version:q5.version||QRA05_VERSION,mode:"research-only",startedAt:Number(q5.startedAt||QRA05_STARTED_AT),evaluatedAt:q5.evaluatedAt||null,phase:q5.phase||null,code:q5.code||null,reason:q5.reason||null,side:q5.side||t.side,metrics:q5.metrics||null,virtualDecision:q5.virtualDecision||"OBSERVAR",accepted:null,causal:q5.causal!==false}:null,
       marketBenchmark:{version:bm.version||MARKET_BENCHMARK_VERSION,benchmarkR:bm.benchmarkR??null,excessR:bm.excessR??null,status:bm.status||null}
     }:null,
+    qra06Context:t.qra06Context||null,
     rPathSummary:rsum?{rows:rsum.rows??null,maxBestR:rsum.maxBestR??null,minWorstR:rsum.minWorstR??null,maxLevelR:rsum.maxLevelR??0}:null,
     rLevelsHit:Array.isArray(t.rLevelsHit)?t.rLevelsHit:[],
     candleLog:[],candleLogCount:Number(t.candleLogCount||(Array.isArray(t.candleLog)?t.candleLog.length:0)||0),candleLogCompacted:true,
@@ -1614,6 +1690,9 @@ setInterval(renderPaperMonitor,1000);
 // v6.11.6: reloj de entrada. Revisa cada 15 s si acaba de cerrar el timeframe configurado.
 setInterval(maybeRunCloseSynchronizedScan,15*1000);
 setTimeout(maybeRunCloseSynchronizedScan,1500);
+// QRA-06 observa en paralelo; nunca participa en la ejecución.
+setInterval(qra06ObserveNewTrades,10*1000);
+setTimeout(qra06ObserveNewTrades,2500);
 setInterval(()=>{
   if(document.visibilityState==="visible" && state.paperTrades.some(needsPaperMonitoring)){
     updatePaperTrades();

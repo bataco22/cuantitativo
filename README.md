@@ -1,6 +1,6 @@
-# Centro Quant v6.11.5 · QRA-05 Fase de Mercado (research-only)
+# Centro Quant v6.11.6 · QRA-05 Fase de Mercado (research-only)
 
-## v6.11.5 · QRA-05 Fase de Mercado
+## v6.11.6 · QRA-05 Fase de Mercado
 
 - Añade **QRA-05** como hipótesis prospectiva nueva, con corte propio guardado en `quant_qra05_started_at`.
 - QRA-05 **no bloquea, no acepta, no redimensiona y no modifica** operaciones del control Centro Quant. Solo clasifica y registra.

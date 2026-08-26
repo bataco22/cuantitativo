@@ -1,5 +1,5 @@
 
-// v6.11.5 · QRA-05 Fase de Mercado research-only + v6.11.4 hotfix/QRA-04
+// v6.11.6 · Entrada sincronizada por cierre de vela + v6.11.5 QRA-05 research-only
 (function(){
   if(!("serviceWorker" in navigator)) return;
   let refreshing=false;
@@ -25,7 +25,10 @@ const STABLE_ASSETS = new Set(["USDT","USDC","FDUSD","TUSD","DAI","USDE","USDS",
 const DEFAULT_ASSETS = ["BTC","ETH","SOL","LINK","AVAX"];
 const DEFAULT_WEIGHTS = {trend:30,momentum:20,strength:15,volume:15,volatility:10,structure:10};
 const QRA_LAB_VERSION = "QRA-OOS-1";
-const APP_VERSION = "6.11.5";
+const APP_VERSION = "6.11.6";
+const ENTRY_SYNC_VERSION = "CLOSE_SYNC_CAUSAL_V1";
+const ENTRY_SYNC_STARTED_AT = Number(localStorage.getItem("quant_entry_sync_started_at")||0) || Date.now();
+localStorage.setItem("quant_entry_sync_started_at",String(ENTRY_SYNC_STARTED_AT));
 const RESEARCH_GENERATION = "ARONSON-QRA-2026-08-22-1";
 const HYPOTHESIS_FREEZE_VERSION = "ARONSON-HYPOTHESES-2026-08-22-1";
 const QRA03_VIRTUAL_VERSION = "QRA03-VIRTUAL-1";
@@ -706,6 +709,13 @@ async function scanAutoPaper(manual=false){
         const pick=candidates[0],key=`${sym}:${a.interval}:${pick.side}`,signalId=signalCandle.t;
         const alreadyOpen=state.paperTrades.some(t=>t.status==="open"&&t.symbol===sym&&t.interval===a.interval&&t.side===pick.side&&t.auto);
         if(alreadyOpen||a.lastSignals[key]===signalId)return row;
+        const signalCloseAt=Number(signalCandle.ct||(+signalCandle.t+intervalMs(a.interval)-1));
+        const discoveredAt=Date.now(),signalAgeMs=discoveredAt-signalCloseAt;
+        // v6.11.6: radar sí muestra la señal, pero ejecución automática sólo si acaba de cerrar su vela.
+        if(signalAgeMs<0||signalAgeMs>autoSignalFreshnessMs(a.interval)){
+          row.executionEligibility="STALE_SIGNAL";row.signalAgeMs=signalAgeMs;return row;
+        }
+        row.executionEligibility="FRESH_SIGNAL";row.signalAgeMs=signalAgeMs;
         // v6.11.3: una señal descubierta a mitad de vela NO puede retroceder al inicio de esa vela.
         // Se arma la operación para ejecutarse al OPEN del siguiente minuto completo. Así toda la
         // vela usada para stop/target/MFE/MAE ocurre después de que la operación existe.
@@ -714,7 +724,7 @@ async function scanAutoPaper(manual=false){
         if(rr<3)return row;
         const riskCash=a.capital*a.riskPct/100,qty=refRiskDist?riskCash/refRiskDist:0;
         const qra05Signal=qra05MarketPhase(analysis,candles,pick.side);
-        state.paperTrades.unshift({id:createdAt+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry:referenceEntry,stop:refLv.stop,target:refLv.target,openedAt,status:"open",current:referenceEntry,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*refRewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:buildResearchSnapshot(analysis,pick.side),researchMeta:buildResearchMeta(),notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez · ejecución causal al siguiente minuto`,auto:true,entryTimingFixed:true,createdAt,signalCandleAt:+signalCandle.t,signalCandleCloseAt:+(signalCandle.ct||signalCandle.t+intervalMs(a.interval)-1),executionModel:"NEXT_1M_OPEN_CAUSAL_V1",monitorInterval:"1m",pendingActivation:true,activationAt:openedAt,plannedStopPct:a.stopPct,plannedTargetPct:a.targetPct,monitorFrom:openedAt,closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qra05Signal, qraLab:null});
+        state.paperTrades.unshift({id:createdAt+Math.floor(Math.random()*1000000),symbol:sym,side:pick.side,interval:a.interval,entry:referenceEntry,stop:refLv.stop,target:refLv.target,openedAt,status:"open",current:referenceEntry,score:pick.score,capital:a.capital,riskPct:a.riskPct,riskCash,qty,potentialProfit:qty*refRewardDist,rr,checklist:{trend:true,signal:true,risk:true,noImpulse:true},scoreType:"auto-score-top100",snapshot:buildResearchSnapshot(analysis,pick.side),researchMeta:buildResearchMeta(),notes:`AUTO TOP 100 · Score ≥ ${a.threshold} · filtro liquidez · cierre sincronizado + ejecución causal al siguiente minuto`,auto:true,entryTimingFixed:true,createdAt,signalCandleAt:+signalCandle.t,signalCandleCloseAt:signalCloseAt,signalAgeMs,entrySyncVersion:ENTRY_SYNC_VERSION,entrySyncStartedAt:ENTRY_SYNC_STARTED_AT,executionModel:"NEXT_1M_OPEN_CAUSAL_V1",monitorInterval:"1m",pendingActivation:true,activationAt:openedAt,plannedStopPct:a.stopPct,plannedTargetPct:a.targetPct,monitorFrom:openedAt,closedAt:null,exit:null,resultPct:null,mfeR:0,maeR:0,candleLog:[],candleFormat:"t,o,h,l,c,v,ct",rPath:[],rPathFormat:"t,oR,bestR,worstR,cR,newLevels,terminal",rLevelsHit:[],exitComparison:newExitComparison(),qra05Signal, qraLab:null});
         a.lastSignals[key]=signalId;opened++; return row;
       }catch(e){
         failed++;
@@ -1266,6 +1276,29 @@ function nextExecutionMinute(ts){
   const minute=60*1000;
   return Math.floor(Number(ts)/minute)*minute+minute;
 }
+// v6.11.6: una señal automática sólo es operable mientras el cierre que la generó sea reciente.
+// Evita ejecutar al abrir/refrescar la PWA señales de 15m/1h/4h que ya envejecieron.
+function autoSignalFreshnessMs(interval){
+  return ({"15m":5*60e3,"1h":7*60e3,"4h":10*60e3,"1d":20*60e3,"1w":60*60e3})[interval]||7*60e3;
+}
+function timeframeBoundaryAt(interval,ts=Date.now()){
+  const ms=intervalMs(interval);
+  // Binance 1w abre/cierra en lunes 00:00 UTC. Unix epoch comenzó en jueves: offset +4 días.
+  const offset=interval==="1w"?4*24*60*60e3:0;
+  return Math.floor((Number(ts)-offset)/ms)*ms+offset;
+}
+const AUTO_CLOSE_SCAN_KEY="quant_auto_close_scan_boundary";
+function maybeRunCloseSynchronizedScan(){
+  if(document.visibilityState!=="visible")return;
+  const a=state.autoPaper;if(!a?.enabled||autoPaperScanInFlight)return;
+  const now=Date.now(),boundary=timeframeBoundaryAt(a.interval,now);
+  // Sólo dispara cerca del cierre; si iOS despertó mucho después, scanAutoPaper igualmente rechazará la señal vieja.
+  if(now-boundary>autoSignalFreshnessMs(a.interval))return;
+  let seen={};try{seen=JSON.parse(localStorage.getItem(AUTO_CLOSE_SCAN_KEY)||"{}")}catch(e){}
+  if(Number(seen[a.interval]||0)>=boundary)return;
+  seen[a.interval]=boundary;localStorage.setItem(AUTO_CLOSE_SCAN_KEY,JSON.stringify(seen));
+  scanAutoPaper(false);
+}
 function monitoringInterval(t){
   return t?.executionModel==="NEXT_1M_OPEN_CAUSAL_V1"?"1m":t.interval;
 }
@@ -1578,6 +1611,9 @@ async function updatePaperTrades(manual=false){
 const PAPER_TRADE_CHECK_MS=45*1000;
 paperMonitor.nextRun=Date.now()+PAPER_TRADE_CHECK_MS;
 setInterval(renderPaperMonitor,1000);
+// v6.11.6: reloj de entrada. Revisa cada 15 s si acaba de cerrar el timeframe configurado.
+setInterval(maybeRunCloseSynchronizedScan,15*1000);
+setTimeout(maybeRunCloseSynchronizedScan,1500);
 setInterval(()=>{
   if(document.visibilityState==="visible" && state.paperTrades.some(needsPaperMonitoring)){
     updatePaperTrades();
